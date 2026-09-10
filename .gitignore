@@ -1,0 +1,8 @@
+# CMake build trees
+build/
+cmake-build-*/
+
+# Generated build artifacts
+*.o
+*.a
+tests/test

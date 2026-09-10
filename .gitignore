@@ -6,3 +6,7 @@ cmake-build-*/
 *.o
 *.a
 tests/test
+
+# Locally downloaded corpora and generated research results
+/corpus/
+/research/

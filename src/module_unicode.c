@@ -1,13 +1,25 @@
 #include "internal.h"
 
+typedef struct bidi_frame {
+    int visible;
+    int after_arabic_letter;
+    int binary;
+} bidi_frame;
+
 typedef struct unicode_scan {
     dedsec_finding_fn emit;
     void *user;
     dedsec_status status;
-    uint64_t ignorables, selectors, tags, bidi, interior_bom;
+    uint64_t ignorables, selectors, tags, bidi, interior_bom, zwsp, zwnj;
     uint64_t noncharacters, shorthand, iteration;
+    uint64_t scalars, lri, rli, fsi, pdi, matched_binary_isolates;
+    uint64_t empty_binary_isolates, empty_after_arabic, unmatched_pdi, stack_overflow;
     size_t first_ignorable, first_selector, first_tag, first_bidi, first_bom;
     size_t first_noncharacter, first_shorthand, first_iteration;
+    uint32_t previous_cp;
+    int have_previous;
+    bidi_frame bidi_stack[128];
+    size_t bidi_depth;
 } unicode_scan;
 
 static int in_range(uint32_t v, uint32_t lo, uint32_t hi) {
@@ -22,13 +34,50 @@ static int known_ignorable(uint32_t cp) {
            in_range(cp, 0x2060, 0x206f) || cp == 0xfeff ||
            in_range(cp, 0xe0001, 0xe007f);
 }
+static int arabic_letter(uint32_t cp) {
+    return in_range(cp, 0x0620, 0x063f) || in_range(cp, 0x0641, 0x064a) ||
+           in_range(cp, 0x066e, 0x066f) || in_range(cp, 0x0671, 0x06d3) ||
+           in_range(cp, 0x06e5, 0x06e6) || in_range(cp, 0x06ee, 0x06ef) ||
+           in_range(cp, 0x06fa, 0x06fc) || cp == 0x06ff;
+}
 static int scan_scalar(void *opaque, const dedsec_scalar *s) {
     unicode_scan *x = (unicode_scan *)opaque;
     uint32_t cp = s->value;
+    ++x->scalars;
+    if (cp == 0x2066 || cp == 0x2067 || cp == 0x2068) {
+        if (cp == 0x2066) ++x->lri;
+        else if (cp == 0x2067) ++x->rli;
+        else ++x->fsi;
+        if (x->bidi_depth < sizeof(x->bidi_stack) / sizeof(x->bidi_stack[0])) {
+            bidi_frame *frame = &x->bidi_stack[x->bidi_depth++];
+            frame->visible = 0;
+            frame->after_arabic_letter = x->have_previous && arabic_letter(x->previous_cp);
+            frame->binary = cp == 0x2066 || cp == 0x2067;
+        } else ++x->stack_overflow;
+    } else if (cp == 0x2069) {
+        ++x->pdi;
+        if (x->bidi_depth) {
+            bidi_frame frame = x->bidi_stack[--x->bidi_depth];
+            if (frame.binary) {
+                ++x->matched_binary_isolates;
+                if (!frame.visible) {
+                    ++x->empty_binary_isolates;
+                    if (frame.after_arabic_letter) ++x->empty_after_arabic;
+                }
+            }
+            if (frame.visible && x->bidi_depth) {
+                x->bidi_stack[x->bidi_depth - 1].visible = 1;
+            }
+        } else ++x->unmatched_pdi;
+    } else if (x->bidi_depth && !known_ignorable(cp)) {
+        x->bidi_stack[x->bidi_depth - 1].visible = 1;
+    }
     if (known_ignorable(cp)) {
         if (!x->ignorables) x->first_ignorable = s->byte_offset;
         ++x->ignorables;
     }
+    if (cp == 0x200b) ++x->zwsp;
+    if (cp == 0x200c) ++x->zwnj;
     if (in_range(cp, 0xfe00, 0xfe0f) || in_range(cp, 0xe0100, 0xe01ef)) {
         if (!x->selectors) x->first_selector = s->byte_offset;
         ++x->selectors;
@@ -59,6 +108,8 @@ static int scan_scalar(void *opaque, const dedsec_scalar *s) {
         if (!x->iteration) x->first_iteration = s->byte_offset;
         ++x->iteration;
     }
+    x->previous_cp = cp;
+    x->have_previous = 1;
     return 0;
 }
 
@@ -85,11 +136,48 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     if (s != DEDSEC_OK) return s;
     s = emit_count(&x, x.tags, x.first_tag, "unicode-tags", "tags-ascii", 85);
     if (s != DEDSEC_OK) return s;
+    if (x.zwsp && x.zwnj) {
+        uint64_t symbols = x.zwsp + x.zwnj;
+        uint32_t score = 45u + (symbols > 10 ? 15u : (uint32_t)symbols);
+        if (score > 100u) score = 100u;
+        s = dedsec_emit_finding(x.emit, x.user, "unicode",
+                                "zero-width-binary-symbols", "zwsp-zwnj-msb",
+                                x.first_ignorable, 0, score, symbols);
+        if (s != DEDSEC_OK) return s;
+    }
     s = emit_count(&x, x.selectors, x.first_selector, "variation-selectors",
                    "variation-nibbles", 45);
     if (s != DEDSEC_OK) return s;
     s = emit_count(&x, x.bidi, x.first_bidi, "bidi-controls", NULL, 60);
     if (s != DEDSEC_OK) return s;
+    {
+        uint64_t openers = x.lri + x.rli;
+        uint64_t minority = x.lri < x.rli ? x.lri : x.rli;
+        uint64_t base_scalars = x.scalars > x.bidi ? x.scalars - x.bidi : 0;
+        double minority_ratio = openers ? (double)minority / (double)openers : 0.0;
+        double matched_ratio = openers ?
+            (double)x.matched_binary_isolates / (double)openers : 0.0;
+        double empty_ratio = openers ?
+            (double)x.empty_binary_isolates / (double)openers : 0.0;
+        double after_arabic_ratio = x.empty_binary_isolates ?
+            (double)x.empty_after_arabic / (double)x.empty_binary_isolates : 0.0;
+        double density = base_scalars ? (double)openers / (double)base_scalars : 0.0;
+        if (openers >= 64 && x.lri >= 8 && x.rli >= 8 &&
+            minority_ratio >= 0.10 && matched_ratio >= 0.90 &&
+            empty_ratio >= 0.50 && density >= 0.05 && !x.stack_overflow &&
+            !x.unmatched_pdi && !x.bidi_depth) {
+            uint32_t score = 65;
+            if (empty_ratio >= 0.90) score += 10;
+            if (minority_ratio >= 0.25) score += 10;
+            if (density >= 0.10) score += 10;
+            if (after_arabic_ratio >= 0.50) score += 5;
+            s = dedsec_emit_finding(x.emit, x.user, "unicode",
+                                    "binary-bidi-isolates",
+                                    "bidi-isolate-bits-msb",
+                                    x.first_bidi, 0, score, openers);
+            if (s != DEDSEC_OK) return s;
+        }
+    }
     s = emit_count(&x, x.interior_bom, x.first_bom, "interior-bom",
                    "strip-known-ignorables", 80);
     if (s != DEDSEC_OK) return s;
@@ -148,6 +236,9 @@ static int decode_scalar(void *opaque, const dedsec_scalar *s) {
             unsigned nibble = (unsigned)(cp - 0xfe00);
             x->status = decode_value(x, (uint8_t)nibble, 4);
         }
+    } else if (dedsec_streq(x->variant, "bidi-isolate-bits-msb")) {
+        if (cp == 0x2066 || cp == 0x2067)
+            x->status = decode_bit(x, cp == 0x2067);
     } else if (dedsec_streq(x->variant, "codepoint-map-msb") ||
                dedsec_streq(x->variant, "codepoint-map-lsb")) {
         size_t i;
@@ -213,6 +304,7 @@ static dedsec_status unicode_decode(void *context, dedsec_view input,
     if (!dedsec_streq(request->variant, "tags-ascii") &&
         !dedsec_streq(request->variant, "zwsp-zwnj-msb") &&
         !dedsec_streq(request->variant, "variation-nibbles") &&
+        !dedsec_streq(request->variant, "bidi-isolate-bits-msb") &&
         !dedsec_streq(request->variant, "iteration-mark-bits") &&
         !dedsec_streq(request->variant, "codepoint-map-msb") &&
         !dedsec_streq(request->variant, "codepoint-map-lsb"))

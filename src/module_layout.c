@@ -16,7 +16,12 @@ static dedsec_status check_pair(dedsec_view input, dedsec_feature_kind kind,
     counts c = {0,0,0,a,b};
     dedsec_status s = dedsec_extract_features(kind, input, count_pair, &c);
     if (s != DEDSEC_OK) return s;
-    if (c.a >= 2 && c.b >= 2 && c.a + c.b >= 8)
+    /* Both values merely occurring is common natural formatting. A binary
+     * carrier normally needs enough examples of both choices to transport a
+     * non-trivial plaintext; reject heavily one-sided natural distributions.
+     * This is a conservative detector gate, not a proof of steganography. */
+    if (c.a >= 8 && c.b >= 8 && c.a + c.b >= 32 &&
+        (c.a < c.b ? c.a : c.b) * 5u >= c.a + c.b)
         return dedsec_emit_finding(emit, user, "layout", rule, decoder, 0,
                                    input.len, score, c.a + c.b);
     return DEDSEC_OK;

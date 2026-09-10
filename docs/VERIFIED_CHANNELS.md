@@ -8,6 +8,7 @@ on the same primitives. All used harmless payloads
 | Feature family | Verified carrier examples | Recovery | Primitive |
 |---|---|---|---|
 | Invisible symbols | ZWSP/ZWNJ binary; Unicode tag bytes | Exact | Code-point alphabet scanner |
+| Bidi isolates | balanced empty LRI/RLI binary with PDI closers | Exact | Structural carrier gate plus isolate decoder |
 | Variation syntax | `U+FE00..U+FE0F` nibble values | Exact | Base/selector validation plus radix decoder |
 | Script confusables | Latin `a` / Cyrillic `а` | Exact | Script runs and UTS #39 skeletons |
 | Canonical aliases | composed/decomposed Hangul, Bengali, Devanagari | Exact before NFC | Normalized shadow plus raw-span signature |

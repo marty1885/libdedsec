@@ -1,13 +1,15 @@
 # libdedsec
 
-`libdedsec` (Deadly Security) is an API-only, pure C11 research prototype for finding and experimentally decoding covert channels in plaintext. That further research on can take in.
+`libdedsec` (Deadly Security) is an API-only, pure C11 research prototype for
+finding and experimentally decoding covert channels in plaintext, providing a
+base for further research.
 
 The name is taken from the Watch Dogs series. it reflects the urgency of getting AI security right before failures cause real harm (to put it very lightly). The library is developed with substantial agent assistance to quickly explore the attack space that agents can independently devise (as that's the attack model).
 
 ## Features
 
 - Strict UTF-8 decoding with source-byte offsets; detection for malformed UTF-8, embedded NULs, BOMs, ISO-2022 designations, default-ignorable and bidi code points, variation selectors, tags, noncharacters, iteration marks, and surface forms such as JSON escapes, URI percent escapes, RFC 2047, C trigraphs, and ANSI controls.
-- Trial decoders for tag bytes, zero-width binary, variation-selector nibbles, ISO-2022 designations, whitespace, case, punctuation, parity, CESU-8 forms, Japanese iteration marks, Base64/Base32, Markdown unordered lists, and conservative structural signals.
+- Trial decoders for tag bytes, zero-width binary, variation-selector nibbles, structurally gated bidi-isolate binary, ISO-2022 designations, whitespace, case, punctuation, parity, CESU-8 forms, Japanese iteration marks, Base64/Base32, Markdown unordered lists, and conservative structural signals.
 - Extensible modules, feature extraction and bit conversion, caller-defined code-point or token alphabets, bit-exact output with partial-byte retention, and transform-chain substring search with source-offset provenance.
 
 ## Build and test
@@ -54,6 +56,18 @@ dedsec_bitstream_init(&candidate);
 dedsec_decode_bits(&registry, "unicode", input, &request, &candidate);
 dedsec_bitstream_free(&candidate);
 ```
+
+## Plaintext prefilter
+
+`dedsec_bitstream_filter()` suppresses extracted streams that do not resemble
+Latin-script plaintext. It recognizes literal UTF-8 plus up to two strict
+Base16, Base32, Base32hex, Base64, or URL-safe Base64 layers. Promote
+`DEDSEC_PLAINTEXT_LIKELY` for the conservative production path; reserve
+`DEDSEC_PLAINTEXT_POSSIBLE` for secondary analysis.
+
+This is explicitly not a ciphertext detector. A rejected result means "not
+plausible supported plaintext," not "no hidden payload." See the
+[plaintext filter contract and measurements](docs/PLAINTEXT_FILTER.md).
 
 ## Search
 

@@ -42,6 +42,36 @@ typedef struct dedsec_bitstream {
     size_t bit_length;
 } dedsec_bitstream;
 
+/* A conservative plaintext-only assessment of an extracted bitstream.
+ * REJECT means "not plausible supported plaintext", not "no hidden data".
+ * Ciphertext, compressed data, binary formats, and unknown encodings are
+ * intentionally outside this filter's scope. */
+typedef enum dedsec_plaintext_verdict {
+    DEDSEC_PLAINTEXT_REJECT = 0,
+    DEDSEC_PLAINTEXT_INSUFFICIENT = 1,
+    DEDSEC_PLAINTEXT_POSSIBLE = 2,
+    DEDSEC_PLAINTEXT_LIKELY = 3
+} dedsec_plaintext_verdict;
+
+#define DEDSEC_PLAINTEXT_ASCII          0x00000001u
+#define DEDSEC_PLAINTEXT_UTF8           0x00000002u
+#define DEDSEC_PLAINTEXT_BASE16         0x00000004u
+#define DEDSEC_PLAINTEXT_BASE32         0x00000008u
+#define DEDSEC_PLAINTEXT_BASE32HEX      0x00000010u
+#define DEDSEC_PLAINTEXT_BASE64         0x00000020u
+#define DEDSEC_PLAINTEXT_BASE64URL      0x00000040u
+#define DEDSEC_PLAINTEXT_BIT_REVERSED   0x00000100u
+#define DEDSEC_PLAINTEXT_BIT_INVERTED   0x00000200u
+
+typedef struct dedsec_bitstream_filter_result {
+    dedsec_plaintext_verdict verdict;
+    uint32_t score;       /* heuristic, 0..100; never a probability */
+    uint32_t flags;
+    unsigned bit_offset;  /* skipped leading bits, 0..7 */
+    unsigned transform_depth;
+    size_t decoded_length;
+} dedsec_bitstream_filter_result;
+
 typedef struct dedsec_finding {
     const char *module_id;
     const char *rule_id;
@@ -116,6 +146,8 @@ void dedsec_bitstream_free(dedsec_bitstream *stream);
 dedsec_status dedsec_bitstream_append_bits(dedsec_bitstream *stream,
                                            uint8_t value, unsigned bit_count,
                                            int lsb_first);
+dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
+                                      dedsec_bitstream_filter_result *result);
 
 void dedsec_registry_init(dedsec_registry *registry);
 void dedsec_registry_free(dedsec_registry *registry);

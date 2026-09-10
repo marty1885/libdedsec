@@ -6,6 +6,7 @@ include(CTest)
 
 set(LIBDEDSEC_SOURCES
     src/core.c
+    src/bitstream_filter.c
     src/utf8.c
     src/features.c
     src/search.c
@@ -35,4 +36,20 @@ if(BUILD_TESTING)
     target_link_libraries(dedsec_tests PRIVATE libdedsec::dedsec)
     target_compile_options(dedsec_tests PRIVATE -pedantic -Wall -Wextra -Werror)
     add_test(NAME dedsec_tests COMMAND dedsec_tests)
+endif()
+
+option(DEDSEC_BUILD_TOOLS "Build research command-line tools" OFF)
+if(DEDSEC_BUILD_TOOLS)
+    add_executable(dedsec_bitstream_benchmark tools/bitstream_benchmark.c)
+    target_link_libraries(dedsec_bitstream_benchmark PRIVATE libdedsec::dedsec m)
+    target_compile_options(dedsec_bitstream_benchmark PRIVATE -pedantic -Wall -Wextra -Werror)
+    add_executable(dedsec_carrier_score tools/carrier_score.c)
+    target_link_libraries(dedsec_carrier_score PRIVATE libdedsec::dedsec)
+    target_compile_options(dedsec_carrier_score PRIVATE -pedantic -Wall -Wextra -Werror)
+    add_executable(dedsec_plaintext_filter tools/plaintext_filter.c)
+    target_link_libraries(dedsec_plaintext_filter PRIVATE libdedsec::dedsec)
+    target_compile_options(dedsec_plaintext_filter PRIVATE -pedantic -Wall -Wextra -Werror)
+    add_executable(dedsec_bidi_probe tools/bidi_probe.c)
+    target_link_libraries(dedsec_bidi_probe PRIVATE libdedsec::dedsec)
+    target_compile_options(dedsec_bidi_probe PRIVATE -pedantic -Wall -Wextra -Werror)
 endif()

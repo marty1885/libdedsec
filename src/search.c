@@ -100,13 +100,6 @@ static uint32_t raw_cp(const uint8_t *p, size_t n) {
     return ((uint32_t)(p[0]&7)<<18) | ((uint32_t)(p[1]&0x3f)<<12) |
            ((uint32_t)(p[2]&0x3f)<<6) | (p[3]&0x3f);
 }
-static int strip_cp(uint32_t cp) {
-    return cp == 0x00ad || cp == 0x034f || cp == 0x061c ||
-           (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x202a && cp <= 0x202e) ||
-           (cp >= 0x2060 && cp <= 0x206f) || cp == 0xfeff ||
-           (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0001 && cp <= 0xe007f) ||
-           (cp >= 0xe0100 && cp <= 0xe01ef);
-}
 static int validate_sink(void *u, const dedsec_scalar *s) { (void)u; (void)s; return 0; }
 
 dedsec_status dedsec_transform_strip_known_ignorables(void *context,
@@ -121,7 +114,7 @@ dedsec_status dedsec_transform_strip_known_ignorables(void *context,
     while (i < input->bytes.len) {
         uint8_t b = input->bytes.ptr[i];
         size_t n = b < 0x80 ? 1 : ((b & 0xe0) == 0xc0 ? 2 : ((b & 0xf0) == 0xe0 ? 3 : 4));
-        if (!strip_cp(raw_cp(input->bytes.ptr + i, n))) {
+        if (!dedsec_unicode_is_default_ignorable(raw_cp(input->bytes.ptr + i, n))) {
             s = copy_range(input, output, i, n);
             if (s != DEDSEC_OK) { text_free(output); return s; }
         }

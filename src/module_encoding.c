@@ -46,7 +46,10 @@ static dedsec_status encoding_detect(void *context, dedsec_view input,
         }
         if (cesu_astral(input.ptr + i, input.len - i)) ++cesu;
     }
-    for (i = 0; i < input.len;) {
+    /* A standard astral scalar is only the zero side of this representation
+     * comparison when a CESU-8 surrogate-pair spelling is actually present.
+     * Do not turn ordinary astral text into glueable zero symbols. */
+    for (i = 0; cesu != 0 && i < input.len;) {
         size_t length;
         uint8_t value;
         if (standard_astral(input.ptr + i, input.len - i)) {

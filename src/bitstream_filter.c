@@ -1,18 +1,72 @@
 #include "internal.h"
 
-#include <string.h>
-
 #define FILTER_MAX_DEPTH 2u
 #define FILTER_MIN_BYTES 6u
 
 typedef struct filter_best {
     dedsec_bitstream_filter_result result;
+    size_t equal_score_interpretations;
+    int has_result;
 } filter_best;
 
-static int ignore_scalar(void *user, const dedsec_scalar *scalar) {
-    (void)user;
-    (void)scalar;
+typedef struct scalar_check {
+    int forbidden_control;
+} scalar_check;
+
+typedef struct filter_path {
+    uint32_t flags;
+    unsigned encoding_depth;
+    unsigned transform_count;
+    dedsec_filter_transform transforms[DEDSEC_FILTER_MAX_TRANSFORMS];
+} filter_path;
+
+typedef struct filter_source {
+    size_t bit_length;
+    size_t complete_bits;
+    unsigned bit_offset;
+    unsigned tail_bits;
+    unsigned tail_ones;
+} filter_source;
+
+static int check_scalar(void *user, const dedsec_scalar *scalar) {
+    scalar_check *check = (scalar_check *)user;
+    if ((scalar->value <= 0x1fu && scalar->value != '\t' &&
+         scalar->value != '\n' && scalar->value != '\r') ||
+        (scalar->value >= 0x7fu && scalar->value <= 0x9fu))
+        check->forbidden_control = 1;
     return 0;
+}
+
+static unsigned byte_popcount(uint8_t value) {
+    unsigned count = 0;
+    while (value) {
+        count += value & 1u;
+        value = (uint8_t)(value >> 1);
+    }
+    return count;
+}
+
+/* Opaque high-entropy-looking bytes cannot be distinguished here from
+ * ciphertext, compressed data, or random noise. Preserve them for backend
+ * review when they are long, bit-balanced, and byte-diverse; this is a routing
+ * decision, never an attribution or payload claim. */
+static int looks_like_opaque_data(dedsec_view input, unsigned tail_ones,
+                                  unsigned tail_bits) {
+    uint32_t seen[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    size_t i, unique = 0, ones = 0, bits;
+    if (input.len < 16u || input.len > (SIZE_MAX - tail_bits) / 8u) return 0;
+    for (i = 0; i < input.len; ++i) {
+        unsigned bucket = input.ptr[i] >> 5;
+        uint32_t mask = (uint32_t)1u << (input.ptr[i] & 31u);
+        ones += byte_popcount(input.ptr[i]);
+        if (!(seen[bucket] & mask)) {
+            seen[bucket] |= mask;
+            ++unique;
+        }
+    }
+    ones += tail_ones;
+    bits = input.len * 8u + tail_bits;
+    return unique >= 8u && ones >= bits / 4u && ones <= bits - bits / 4u;
 }
 
 static int ascii_alpha(uint8_t c) {
@@ -52,10 +106,12 @@ static uint32_t plaintext_score(dedsec_view input, uint32_t *text_flags) {
     double alpha_fraction, vowel_fraction, whitespace_fraction, punctuation_fraction;
     int previous_alpha = 0;
     uint8_t previous = 0;
+    scalar_check check = {0};
 
     *text_flags = 0;
     if (input.len < FILTER_MIN_BYTES) return 0;
-    if (dedsec_utf8_foreach(input, ignore_scalar, NULL, NULL) != DEDSEC_OK) return 0;
+    if (dedsec_utf8_foreach(input, check_scalar, &check, NULL) != DEDSEC_OK ||
+        check.forbidden_control) return 0;
     *text_flags |= DEDSEC_PLAINTEXT_UTF8;
 
     for (i = 0; i < input.len; ++i) {
@@ -97,7 +153,9 @@ static uint32_t plaintext_score(dedsec_view input, uint32_t *text_flags) {
         score += 20;
     else if (common) score += 10;
     if (punctuation_fraction <= 0.25) score += 5;
-    if (high && input.len >= 8) score += 15;
+    /* Strict UTF-8 alone supplies no bonus. Non-ASCII text must qualify from
+     * the same surrounding word/whitespace evidence as ASCII text; this keeps
+     * a lone accidental scalar at a shifted bit phase below LIKELY. */
     return score > 100 ? 100 : score;
 }
 
@@ -212,63 +270,148 @@ static int decode_base64(dedsec_view input, dedsec_buffer *output, int url) {
     return output->len ? 1 : 0;
 }
 
-static int result_better(const dedsec_bitstream_filter_result *candidate,
-                         const dedsec_bitstream_filter_result *best) {
-    if (!best->decoded_length) return 1;
-    if (candidate->score != best->score) return candidate->score > best->score;
-    if (candidate->transform_depth != best->transform_depth)
-        return candidate->transform_depth < best->transform_depth;
-    return candidate->flags < best->flags;
+static int path_append(filter_path *path, dedsec_filter_transform transform) {
+    if (path->transform_count >= DEDSEC_FILTER_MAX_TRANSFORMS) return 0;
+    path->transforms[path->transform_count++] = transform;
+    return 1;
 }
 
-static dedsec_status assess_bytes(dedsec_view input, unsigned depth,
-                                  uint32_t inherited_flags, unsigned bit_offset,
+static unsigned bit_transform_count(const dedsec_bitstream_filter_result *result) {
+    unsigned i, count = 0;
+    for (i = 0; i < result->transform_count; ++i)
+        if (result->transforms[i] == DEDSEC_FILTER_TRANSFORM_REVERSE_BITS ||
+            result->transforms[i] == DEDSEC_FILTER_TRANSFORM_INVERT_BITS)
+            ++count;
+    return count;
+}
+
+static int result_better(const dedsec_bitstream_filter_result *candidate,
+                         const dedsec_bitstream_filter_result *best) {
+    unsigned candidate_bit_ops, best_bit_ops;
+    if (candidate->score != best->score) return candidate->score > best->score;
+    if (candidate->bit_offset != best->bit_offset)
+        return candidate->bit_offset < best->bit_offset;
+    if (candidate->source_bits_consumed != best->source_bits_consumed)
+        return candidate->source_bits_consumed > best->source_bits_consumed;
+    candidate_bit_ops = bit_transform_count(candidate);
+    best_bit_ops = bit_transform_count(best);
+    if (candidate_bit_ops != best_bit_ops) return candidate_bit_ops < best_bit_ops;
+    if (candidate->transform_depth != best->transform_depth)
+        return candidate->transform_depth > best->transform_depth;
+    if ((candidate->flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) !=
+        (best->flags & DEDSEC_PLAINTEXT_OPAQUE_DATA))
+        return (candidate->flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0;
+    return 0;
+}
+
+static void consider_result(filter_best *best,
+                            const dedsec_bitstream_filter_result *candidate) {
+    if (!best->has_result || candidate->score > best->result.score) {
+        best->result = *candidate;
+        best->equal_score_interpretations = 1;
+        best->has_result = 1;
+        return;
+    }
+    if (candidate->score == best->result.score) {
+        ++best->equal_score_interpretations;
+        if (result_better(candidate, &best->result)) best->result = *candidate;
+    }
+}
+
+static dedsec_status assess_variants(dedsec_view input, filter_path path,
+                                     const filter_source *source,
+                                     filter_best *best);
+
+static dedsec_status assess_bytes(dedsec_view input, filter_path path,
+                                  const filter_source *source,
                                   filter_best *best) {
-    dedsec_bitstream_filter_result candidate;
+    dedsec_bitstream_filter_result candidate = {0};
     dedsec_buffer decoded;
     uint32_t text_flags = 0;
     uint32_t score = plaintext_score(input, &text_flags);
     int decoded_ok, encoding_valid = 0;
+    unsigned tail_bits = path.encoding_depth == 0 ? source->tail_bits : 0u;
+    unsigned tail_ones = path.encoding_depth == 0 ? source->tail_ones : 0u;
 
-    memset(&candidate, 0, sizeof(candidate));
     candidate.score = score;
-    if (bit_offset && candidate.score >= 5) candidate.score -= 5;
-    if ((inherited_flags & DEDSEC_PLAINTEXT_BIT_REVERSED) && candidate.score >= 5)
+    if (source->bit_offset && candidate.score >= 5) candidate.score -= 5;
+    if ((path.flags & DEDSEC_PLAINTEXT_BIT_REVERSED) && candidate.score >= 5)
         candidate.score -= 5;
-    if ((inherited_flags & DEDSEC_PLAINTEXT_BIT_INVERTED) && candidate.score >= 5)
+    if ((path.flags & DEDSEC_PLAINTEXT_BIT_INVERTED) && candidate.score >= 5)
         candidate.score -= 5;
-    candidate.flags = inherited_flags | text_flags;
-    candidate.bit_offset = bit_offset;
-    candidate.transform_depth = depth;
+    candidate.flags = path.flags | text_flags;
+    if (source->tail_bits) candidate.flags |= DEDSEC_PLAINTEXT_PARTIAL_BITS;
+    candidate.bit_offset = source->bit_offset;
+    candidate.transform_depth = path.encoding_depth;
     candidate.decoded_length = input.len;
-    if (depth >= FILTER_MAX_DEPTH) {
-        if (result_better(&candidate, &best->result)) best->result = candidate;
+    candidate.source_bit_length = source->bit_length;
+    candidate.source_bits_consumed = source->complete_bits;
+    candidate.ignored_trailing_bits = source->tail_bits;
+    candidate.transform_count = path.transform_count;
+    if (path.transform_count) {
+        unsigned i;
+        for (i = 0; i < path.transform_count; ++i)
+            candidate.transforms[i] = path.transforms[i];
+    }
+
+    /* Opaque routing is an independent qualification, not weak plaintext.
+     * Alignment and bit-transform penalties may rank candidates, but must not
+     * turn qualifying data into REJECT. At depth zero, partial trailing bits
+     * participate in bit balance even though they cannot form a byte. */
+    if (candidate.score < 70u &&
+        looks_like_opaque_data(input, tail_ones, tail_bits)) {
+        candidate.score = 70u;
+        candidate.flags |= DEDSEC_PLAINTEXT_OPAQUE_DATA;
+        if (path.encoding_depth == 0 && source->tail_bits) {
+            candidate.source_bits_consumed += source->tail_bits;
+            candidate.ignored_trailing_bits = 0;
+            candidate.assessed_trailing_bits = source->tail_bits;
+        }
+    }
+
+    if (path.encoding_depth >= FILTER_MAX_DEPTH) {
+        consider_result(best, &candidate);
         return DEDSEC_OK;
     }
 
-#define TRY_DECODE(call_, flag_) do { \
+#define TRY_DECODE(call_, flag_, transform_) do { \
     dedsec_buffer_init(&decoded); \
     decoded_ok = (call_); \
     if (decoded_ok < 0) { dedsec_buffer_free(&decoded); return DEDSEC_ENOMEM; } \
     if (decoded_ok > 0) { \
+        filter_path next_path = path; \
         encoding_valid = 1; \
-        dedsec_status recurse_status = assess_bytes((dedsec_view){decoded.ptr, decoded.len}, \
-            depth + 1, inherited_flags | (flag_), bit_offset, best); \
+        dedsec_status recurse_status; \
+        next_path.flags |= (flag_); \
+        ++next_path.encoding_depth; \
+        if (!path_append(&next_path, (transform_))) { \
+            dedsec_buffer_free(&decoded); return DEDSEC_EINVAL; \
+        } \
+        recurse_status = assess_variants((dedsec_view){decoded.ptr, decoded.len}, \
+                                         next_path, source, best); \
         dedsec_buffer_free(&decoded); \
         if (recurse_status != DEDSEC_OK) return recurse_status; \
     } else dedsec_buffer_free(&decoded); \
 } while (0)
 
-    TRY_DECODE(decode_base16(input, &decoded), DEDSEC_PLAINTEXT_BASE16);
-    TRY_DECODE(decode_base32(input, &decoded, 0), DEDSEC_PLAINTEXT_BASE32);
-    TRY_DECODE(decode_base32(input, &decoded, 1), DEDSEC_PLAINTEXT_BASE32HEX);
-    TRY_DECODE(decode_base64(input, &decoded, 0), DEDSEC_PLAINTEXT_BASE64);
-    TRY_DECODE(decode_base64(input, &decoded, 1), DEDSEC_PLAINTEXT_BASE64URL);
+    TRY_DECODE(decode_base16(input, &decoded), DEDSEC_PLAINTEXT_BASE16,
+               DEDSEC_FILTER_TRANSFORM_BASE16);
+    TRY_DECODE(decode_base32(input, &decoded, 0), DEDSEC_PLAINTEXT_BASE32,
+               DEDSEC_FILTER_TRANSFORM_BASE32);
+    TRY_DECODE(decode_base32(input, &decoded, 1), DEDSEC_PLAINTEXT_BASE32HEX,
+               DEDSEC_FILTER_TRANSFORM_BASE32HEX);
+    TRY_DECODE(decode_base64(input, &decoded, 0), DEDSEC_PLAINTEXT_BASE64,
+               DEDSEC_FILTER_TRANSFORM_BASE64);
+    TRY_DECODE(decode_base64(input, &decoded, 1), DEDSEC_PLAINTEXT_BASE64URL,
+               DEDSEC_FILTER_TRANSFORM_BASE64URL);
 #undef TRY_DECODE
     /* A canonical dense radix token is evidence of an encoding, not evidence
      * that its printable wrapper is prose. Its decoded content must pass. */
-    if (encoding_valid && candidate.score > 60) candidate.score = 60;
-    if (result_better(&candidate, &best->result)) best->result = candidate;
+    if (encoding_valid && candidate.score > 60u &&
+        !(candidate.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA)) {
+        candidate.score = 60u;
+    }
+    consider_result(best, &candidate);
     return DEDSEC_OK;
 }
 
@@ -295,9 +438,61 @@ static dedsec_status make_interpretation(const dedsec_bitstream *stream,
     return DEDSEC_OK;
 }
 
+static dedsec_status make_byte_variant(dedsec_view input, int reverse, int invert,
+                                       dedsec_buffer *bytes) {
+    size_t i;
+    for (i = 0; i < input.len; ++i) {
+        unsigned k;
+        uint8_t value = 0;
+        for (k = 0; k < 8; ++k) {
+            unsigned source = reverse ? 7u - k : k;
+            unsigned bit = ((input.ptr[i] >> (7u - source)) & 1u) ^
+                           (unsigned)invert;
+            value |= (uint8_t)(bit << (7u - k));
+        }
+        if (dedsec_buffer_push(bytes, value) != DEDSEC_OK) return DEDSEC_ENOMEM;
+    }
+    return DEDSEC_OK;
+}
+
+static dedsec_status assess_variants(dedsec_view input, filter_path path,
+                                     const filter_source *source,
+                                     filter_best *best) {
+    int reverse, invert;
+    dedsec_status status = assess_bytes(input, path, source, best);
+    if (status != DEDSEC_OK) return status;
+    for (reverse = 0; reverse <= 1; ++reverse) {
+        for (invert = 0; invert <= 1; ++invert) {
+            dedsec_buffer bytes;
+            filter_path next_path = path;
+            if (!reverse && !invert) continue;
+            if (reverse) {
+                next_path.flags |= DEDSEC_PLAINTEXT_BIT_REVERSED;
+                if (!path_append(&next_path,
+                                 DEDSEC_FILTER_TRANSFORM_REVERSE_BITS))
+                    return DEDSEC_EINVAL;
+            }
+            if (invert) {
+                next_path.flags |= DEDSEC_PLAINTEXT_BIT_INVERTED;
+                if (!path_append(&next_path,
+                                 DEDSEC_FILTER_TRANSFORM_INVERT_BITS))
+                    return DEDSEC_EINVAL;
+            }
+            dedsec_buffer_init(&bytes);
+            status = make_byte_variant(input, reverse, invert, &bytes);
+            if (status == DEDSEC_OK)
+                status = assess_bytes((dedsec_view){bytes.ptr, bytes.len},
+                                      next_path, source, best);
+            dedsec_buffer_free(&bytes);
+            if (status != DEDSEC_OK) return status;
+        }
+    }
+    return DEDSEC_OK;
+}
+
 dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
                                       dedsec_bitstream_filter_result *result) {
-    filter_best best;
+    filter_best best = {0};
     size_t required;
     unsigned offset;
     int reverse, invert;
@@ -305,28 +500,52 @@ dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
         return DEDSEC_EINVAL;
     if (stream->bit_length > SIZE_MAX - 7) return DEDSEC_EINVAL;
     required = (stream->bit_length + 7) / 8;
-    if (stream->bytes.len < required) return DEDSEC_EINVAL;
-    memset(&best, 0, sizeof(best));
+    if (stream->bytes.len != required || stream->bytes.len > stream->bytes.capacity)
+        return DEDSEC_EINVAL;
+    if (stream->bit_length % 8u) {
+        unsigned unused = 8u - (unsigned)(stream->bit_length % 8u);
+        uint8_t mask = (uint8_t)((1u << unused) - 1u);
+        if (stream->bytes.ptr[required - 1u] & mask) return DEDSEC_EINVAL;
+    }
     best.result.verdict = DEDSEC_PLAINTEXT_INSUFFICIENT;
     for (offset = 0; offset < 8 && offset < stream->bit_length; ++offset) {
+        filter_source source;
         if ((stream->bit_length - offset) / 8 < FILTER_MIN_BYTES) continue;
+        source.bit_length = stream->bit_length;
+        source.bit_offset = offset;
+        source.complete_bits = ((stream->bit_length - offset) / 8u) * 8u;
+        source.tail_bits = (unsigned)((stream->bit_length - offset) % 8u);
         for (reverse = 0; reverse <= 1; ++reverse) {
             for (invert = 0; invert <= 1; ++invert) {
                 dedsec_buffer bytes;
-                uint32_t flags = (reverse ? DEDSEC_PLAINTEXT_BIT_REVERSED : 0u) |
-                                 (invert ? DEDSEC_PLAINTEXT_BIT_INVERTED : 0u);
+                filter_path path = {0};
                 dedsec_status status;
+                size_t tail_start, tail_index;
+                source.tail_ones = 0;
+                tail_start = offset + source.complete_bits;
+                for (tail_index = tail_start;
+                     tail_index < stream->bit_length; ++tail_index)
+                    source.tail_ones += stream_bit(stream, tail_index);
+                if (invert) source.tail_ones = source.tail_bits - source.tail_ones;
+                if (reverse) {
+                    path.flags |= DEDSEC_PLAINTEXT_BIT_REVERSED;
+                    (void)path_append(&path, DEDSEC_FILTER_TRANSFORM_REVERSE_BITS);
+                }
+                if (invert) {
+                    path.flags |= DEDSEC_PLAINTEXT_BIT_INVERTED;
+                    (void)path_append(&path, DEDSEC_FILTER_TRANSFORM_INVERT_BITS);
+                }
                 dedsec_buffer_init(&bytes);
                 status = make_interpretation(stream, offset, reverse, invert, &bytes);
                 if (status == DEDSEC_OK)
-                    status = assess_bytes((dedsec_view){bytes.ptr, bytes.len}, 0,
-                                          flags, offset, &best);
+                    status = assess_bytes((dedsec_view){bytes.ptr, bytes.len},
+                                          path, &source, &best);
                 dedsec_buffer_free(&bytes);
                 if (status != DEDSEC_OK) return status;
             }
         }
     }
-    if (best.result.decoded_length < FILTER_MIN_BYTES) {
+    if (!best.has_result || best.result.decoded_length < FILTER_MIN_BYTES) {
         best.result.verdict = DEDSEC_PLAINTEXT_INSUFFICIENT;
     } else if (best.result.score >= 90) {
         best.result.verdict = DEDSEC_PLAINTEXT_LIKELY;
@@ -335,6 +554,7 @@ dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
     } else {
         best.result.verdict = DEDSEC_PLAINTEXT_REJECT;
     }
+    best.result.equal_score_interpretations = best.equal_score_interpretations;
     *result = best.result;
     return DEDSEC_OK;
 }

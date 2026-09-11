@@ -73,11 +73,13 @@ The registry is intentionally incomplete. Its existence must not be used to
 claim coverage for arbitrary Unicode aliases, typography, or grammatical
 equivalence.
 
-ABI v3 also exposes `DEDSEC_DETECTION_SYMBOL` observations with raw byte spans.
-Composite red teams must test whether a payload split across multiple reviewed
-families stays below every standalone gate. Deduplicate overlapping features,
-then test only bounded source-order or explicitly framed merge conventions;
-plaintext-looking output alone never elevates a composite hypothesis.
+ABI v4 also exposes zero-score raw property observations and
+`DEDSEC_DETECTION_SYMBOL` events with raw byte spans. Only symbols may enter
+source-order composition. Composite red teams must test whether a payload split
+across multiple reviewed families stays below every standalone gate.
+Deduplicate overlapping features, then test only bounded source-order or
+explicitly framed merge conventions; plaintext-looking output alone never
+elevates a composite hypothesis.
 
 ## One red-team → blue-team cycle
 

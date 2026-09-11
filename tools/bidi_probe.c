@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
         dedsec_buffer input;
         dedsec_bitstream bits;
         dedsec_bitstream_filter_result filter = {
-            DEDSEC_PLAINTEXT_INSUFFICIENT, 0, 0, 0, 0, 0
+            .verdict = DEDSEC_PLAINTEXT_INSUFFICIENT
         };
         probe_findings findings = {0};
         dedsec_status status;

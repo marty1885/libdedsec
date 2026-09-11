@@ -11,6 +11,7 @@ It is not a general synonym, parser, or normalization service.
 | `canonical-e-acute-identity-bits` | `U+00E9` | `U+0065 U+0301` | Exact canonical-equivalence pair; raw bytes and scalar count differ. |
 | `hyphen-identity-bits` | `U+002D` HYPHEN-MINUS | `U+2011` NON-BREAKING HYPHEN | Visual joining function only; U+2011 changes line breaking. |
 | `canonical-combining-order-bits` | `U+0061 U+0323 U+0301` | `U+0061 U+0301 U+0323` | Exact reviewed canonical-order pair only. The latter order is a raw anomaly before canonical reordering; no general grapheme/normalization claim is made. |
+| `canonical-kelvin-identity-bits` | `U+004B` LATIN CAPITAL LETTER K | `U+212A` KELVIN SIGN | Exact canonical singleton: all four standard normalization forms map Kelvin sign to `K`. In scientific/unit typography or case-sensitive identifiers, raw spelling and semantics can still matter; require field grammar and baseline. |
 
 `dedsec_registry_add_builtins()` registers this module. Decode with the
 relevant variant through `dedsec_decode_bits()`; output is packed MSB-first and

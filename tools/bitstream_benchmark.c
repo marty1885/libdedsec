@@ -229,7 +229,9 @@ static void benchmark_file(const dedsec_registry *registry, const char *path,
         size_t fft_bits = 0;
         double bit_h = 0.0, bit_min_h = 0.0, byte_h = 0.0, serial_h = 0.0;
         double peak_share = 0.0, flatness = 0.0, dominant_period = 0.0;
-        dedsec_bitstream_filter_result filter = {DEDSEC_PLAINTEXT_INSUFFICIENT, 0, 0, 0, 0, 0};
+        dedsec_bitstream_filter_result filter = {
+            .verdict = DEDSEC_PLAINTEXT_INSUFFICIENT
+        };
         dedsec_bitstream_init(&stream);
         if (detected_only && findings.count[i] == 0) continue;
         s = dedsec_decode_bits(registry, lanes[i].module,

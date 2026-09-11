@@ -20,6 +20,8 @@ static const uint8_t hyphen_zero[] = {0x2d};
 static const uint8_t hyphen_one[] = {0xe2, 0x80, 0x91};
 static const uint8_t mark_order_zero[] = {0x61, 0xcc, 0xa3, 0xcc, 0x81};
 static const uint8_t mark_order_one[] = {0x61, 0xcc, 0x81, 0xcc, 0xa3};
+static const uint8_t kelvin_zero[] = {0x4b};
+static const uint8_t kelvin_one[] = {0xe2, 0x84, 0xaa};
 
 static const identity_pair pairs[] = {
     {"space-identity", "space-identity-bits",
@@ -30,7 +32,9 @@ static const identity_pair pairs[] = {
      {hyphen_zero, sizeof(hyphen_zero)}, {hyphen_one, sizeof(hyphen_one)}},
     {"canonical-combining-order-identity", "canonical-combining-order-bits",
      {mark_order_zero, sizeof(mark_order_zero)},
-     {mark_order_one, sizeof(mark_order_one)}}
+     {mark_order_one, sizeof(mark_order_one)}},
+    {"canonical-kelvin-identity", "canonical-kelvin-identity-bits",
+     {kelvin_zero, sizeof(kelvin_zero)}, {kelvin_one, sizeof(kelvin_one)}}
 };
 
 static int validate_scalar(void *opaque, const dedsec_scalar *scalar) {

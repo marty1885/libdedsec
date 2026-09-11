@@ -110,7 +110,7 @@ const dedsec_module *dedsec_registry_find(const dedsec_registry *registry,
 }
 
 dedsec_status dedsec_registry_add_builtins(dedsec_registry *registry) {
-    const dedsec_module *mods[7];
+    const dedsec_module *mods[8];
     size_t i;
     dedsec_status status;
     mods[0] = dedsec_builtin_encoding_module();
@@ -120,7 +120,8 @@ dedsec_status dedsec_registry_add_builtins(dedsec_registry *registry) {
     mods[4] = dedsec_builtin_surface_module();
     mods[5] = dedsec_builtin_structure_module();
     mods[6] = dedsec_builtin_markdown_module();
-    for (i = 0; i < 7; ++i) {
+    mods[7] = dedsec_builtin_gemtext_module();
+    for (i = 0; i < 8; ++i) {
         status = dedsec_registry_add(registry, mods[i]);
         if (status != DEDSEC_OK) return status;
     }
@@ -162,6 +163,25 @@ dedsec_status dedsec_emit_symbol(dedsec_finding_fn emit, void *user,
     finding.kind = DEDSEC_DETECTION_SYMBOL;
     finding.symbol_value = value;
     finding.symbol_width = width;
+    return emit(user, &finding) ? DEDSEC_ESTOP : DEDSEC_OK;
+}
+
+dedsec_status dedsec_emit_observation(dedsec_finding_fn emit, void *user,
+                                      const char *module, const char *rule,
+                                      size_t offset, size_t length,
+                                      uint64_t evidence) {
+    dedsec_finding finding;
+    if (!emit) return DEDSEC_EINVAL;
+    finding.module_id = module;
+    finding.rule_id = rule;
+    finding.decoder_hint = NULL;
+    finding.byte_offset = offset;
+    finding.byte_length = length;
+    finding.score = 0;
+    finding.evidence = evidence;
+    finding.kind = DEDSEC_DETECTION_OBSERVATION;
+    finding.symbol_value = 0;
+    finding.symbol_width = 0;
     return emit(user, &finding) ? DEDSEC_ESTOP : DEDSEC_OK;
 }
 

@@ -10,6 +10,7 @@ set(LIBDEDSEC_SOURCES
     src/bitstream_filter.c
     src/utf8.c
     src/features.c
+    src/unicode_properties.c
     src/search.c
     src/module_encoding.c
     src/module_unicode.c
@@ -18,6 +19,7 @@ set(LIBDEDSEC_SOURCES
     src/module_surface.c
     src/module_structure.c
     src/module_markdown.c
+    src/module_gemtext.c
 )
 
 add_library(dedsec STATIC ${LIBDEDSEC_SOURCES})

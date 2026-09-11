@@ -29,6 +29,120 @@ static int capture_zwsp_zwnj(void *u, const dedsec_finding *f) {
         strcmp(f->decoder_hint, "zwsp-zwnj-msb") == 0) ++*count;
     return 0;
 }
+static int capture_cesu_symbol(void *u, const dedsec_finding *f) {
+    size_t *count = (size_t *)u;
+    if (f->kind == DEDSEC_DETECTION_SYMBOL && f->decoder_hint &&
+        strcmp(f->decoder_hint, "utf8-cesu8-form-bits-msb") == 0) ++*count;
+    return 0;
+}
+typedef struct dicp_capture {
+    size_t findings;
+    size_t symbols;
+    size_t first_offset;
+    uint64_t evidence;
+} dicp_capture;
+static int capture_dicp(void *u, const dedsec_finding *f) {
+    dicp_capture *capture = (dicp_capture *)u;
+    if (strcmp(f->module_id, "unicode") != 0 ||
+        strcmp(f->rule_id, "default-ignorable-candidates") != 0)
+        return 0;
+    if (f->kind == DEDSEC_DETECTION_FINDING) {
+        ++capture->findings;
+        capture->first_offset = f->byte_offset;
+        capture->evidence = f->evidence;
+    } else {
+        ++capture->symbols;
+    }
+    return 0;
+}
+typedef struct unicode_whitespace_capture {
+    dedsec_finding events[64];
+    size_t count;
+} unicode_whitespace_capture;
+static int capture_unicode_whitespace(void *u, const dedsec_finding *f) {
+    unicode_whitespace_capture *capture = (unicode_whitespace_capture *)u;
+    if (f->kind == DEDSEC_DETECTION_OBSERVATION &&
+        strcmp(f->module_id, "unicode") == 0 &&
+        strcmp(f->rule_id, "unicode-white-space-scalar") == 0) {
+        CHECK(capture->count < sizeof(capture->events) / sizeof(capture->events[0]));
+        capture->events[capture->count++] = *f;
+    }
+    return 0;
+}
+typedef struct c1_control_capture {
+    dedsec_finding events[64];
+    size_t count;
+} c1_control_capture;
+static int capture_c1_controls(void *u, const dedsec_finding *f) {
+    c1_control_capture *capture = (c1_control_capture *)u;
+    if (f->kind == DEDSEC_DETECTION_OBSERVATION &&
+        strcmp(f->module_id, "unicode") == 0 &&
+        strcmp(f->rule_id, "unicode-c1-control-scalar") == 0) {
+        CHECK(capture->count < sizeof(capture->events) / sizeof(capture->events[0]));
+        capture->events[capture->count++] = *f;
+    }
+    return 0;
+}
+typedef struct format_control_capture {
+    dedsec_finding values[16];
+    dedsec_finding contexts[16];
+    size_t value_count;
+    size_t context_count;
+} format_control_capture;
+static int capture_non_ignorable_format_controls(void *u, const dedsec_finding *f) {
+    format_control_capture *capture = (format_control_capture *)u;
+    if (f->kind != DEDSEC_DETECTION_OBSERVATION ||
+        strcmp(f->module_id, "unicode") != 0) return 0;
+    if (strcmp(f->rule_id, "unicode-non-ignorable-format-control-scalar") == 0) {
+        CHECK(capture->value_count < sizeof(capture->values) /
+              sizeof(capture->values[0]));
+        capture->values[capture->value_count++] = *f;
+    } else if (strcmp(f->rule_id,
+                      "unicode-non-ignorable-format-control-adjacent-context") == 0) {
+        CHECK(capture->context_count < sizeof(capture->contexts) /
+              sizeof(capture->contexts[0]));
+        capture->contexts[capture->context_count++] = *f;
+    }
+    return 0;
+}
+typedef struct c1_whitespace_overlap_capture {
+    size_t c1_count;
+    size_t whitespace_count;
+} c1_whitespace_overlap_capture;
+static int capture_c1_whitespace_overlap(void *u, const dedsec_finding *f) {
+    c1_whitespace_overlap_capture *capture = (c1_whitespace_overlap_capture *)u;
+    if (f->kind != DEDSEC_DETECTION_OBSERVATION ||
+        strcmp(f->module_id, "unicode") != 0) return 0;
+    if (strcmp(f->rule_id, "unicode-c1-control-scalar") == 0) {
+        ++capture->c1_count;
+        CHECK(f->byte_offset == 0 && f->byte_length == 2 && f->evidence == 0x0085u);
+    } else if (strcmp(f->rule_id, "unicode-white-space-scalar") == 0) {
+        ++capture->whitespace_count;
+        CHECK(f->byte_offset == 0 && f->byte_length == 2 && f->evidence == 0x0085u);
+    }
+    return 0;
+}
+typedef struct dicp_observation_capture {
+    dedsec_finding values[64];
+    dedsec_finding contexts[64];
+    size_t value_count;
+    size_t context_count;
+} dicp_observation_capture;
+static int capture_dicp_observations(void *u, const dedsec_finding *f) {
+    dicp_observation_capture *capture = (dicp_observation_capture *)u;
+    if (f->kind != DEDSEC_DETECTION_OBSERVATION ||
+        strcmp(f->module_id, "unicode") != 0) return 0;
+    if (strcmp(f->rule_id, "default-ignorable-scalar") == 0) {
+        CHECK(capture->value_count < sizeof(capture->values) /
+              sizeof(capture->values[0]));
+        capture->values[capture->value_count++] = *f;
+    } else if (strcmp(f->rule_id, "default-ignorable-adjacent-context") == 0) {
+        CHECK(capture->context_count < sizeof(capture->contexts) /
+              sizeof(capture->contexts[0]));
+        capture->contexts[capture->context_count++] = *f;
+    }
+    return 0;
+}
 static int capture_bidi_binary(void *u, const dedsec_finding *f) {
     size_t *count = (size_t *)u;
     if (f->kind == DEDSEC_DETECTION_FINDING && f->decoder_hint &&
@@ -50,6 +164,64 @@ static int capture_identity(void *u, const dedsec_finding *f) {
     if (f->kind == DEDSEC_DETECTION_FINDING &&
         strcmp(f->module_id, "identity") == 0 && f->decoder_hint &&
         strcmp(f->decoder_hint, capture->variant) == 0) ++capture->count;
+    return 0;
+}
+typedef struct gemtext_capture {
+    const char *variant;
+    size_t symbols;
+    size_t findings;
+    size_t zero_span;
+} gemtext_capture;
+static int capture_gemtext(void *u, const dedsec_finding *f) {
+    gemtext_capture *capture = (gemtext_capture *)u;
+    if (!f->decoder_hint || strcmp(f->decoder_hint, capture->variant) != 0)
+        return 0;
+    if (f->kind == DEDSEC_DETECTION_FINDING) {
+        ++capture->findings;
+    } else {
+        ++capture->symbols;
+        if (f->symbol_value == 0 && f->byte_length > capture->zero_span)
+            capture->zero_span = f->byte_length;
+    }
+    return 0;
+}
+typedef struct implicit_bidi_capture {
+    const char *variant;
+    dedsec_finding events[64];
+    size_t symbols;
+    size_t findings;
+} implicit_bidi_capture;
+static int capture_implicit_bidi(void *u, const dedsec_finding *f) {
+    implicit_bidi_capture *capture = (implicit_bidi_capture *)u;
+    if (!f->decoder_hint || strcmp(f->decoder_hint, capture->variant) != 0)
+        return 0;
+    if (f->kind == DEDSEC_DETECTION_FINDING) {
+        ++capture->findings;
+    } else {
+        CHECK(capture->symbols < sizeof(capture->events) /
+              sizeof(capture->events[0]));
+        capture->events[capture->symbols++] = *f;
+    }
+    return 0;
+}
+typedef struct implicit_bidi_interaction {
+    implicit_bidi_capture implicit;
+    dedsec_finding line;
+    int have_line;
+} implicit_bidi_interaction;
+static int capture_implicit_bidi_interaction(void *u, const dedsec_finding *f) {
+    implicit_bidi_interaction *capture = (implicit_bidi_interaction *)u;
+    if (f->decoder_hint &&
+        strcmp(f->decoder_hint, capture->implicit.variant) == 0) {
+        return capture_implicit_bidi(&capture->implicit, f);
+    }
+    if (f->kind == DEDSEC_DETECTION_SYMBOL && f->decoder_hint &&
+        strcmp(f->decoder_hint, "line-ending-bits-lf-zero") == 0) {
+        if (!capture->have_line) {
+            capture->line = *f;
+            capture->have_line = 1;
+        }
+    }
     return 0;
 }
 typedef struct symbol_capture {
@@ -236,6 +408,216 @@ static void mongolian_fvs_case_expect(dedsec_registry *registry) {
     dedsec_bitstream_free(&output);
     dedsec_buffer_free(&carrier);
 }
+static void gemtext_case_expect(dedsec_registry *registry, const char *variant,
+                                unsigned mode) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const uint8_t malformed[] = {0x3d, 0x3e, 0x20, 0xc0, 0xaf, 0x0a};
+    dedsec_buffer carrier;
+    gemtext_capture capture = {variant, 0, 0, 0};
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        int one = (i & 1u) != 0;
+        const char *prefix = "=>";
+        const char *prefix_sep = "";
+        const char *label_sep = " ";
+        if (mode == 0) prefix_sep = one ? " " : "";
+        else if (mode == 1) prefix_sep = one ? "\t" : " ";
+        else if (mode == 2) label_sep = one ? " " : "  ";
+        else label_sep = one ? "\t" : " ";
+        CHECK(dedsec_buffer_append(&carrier, prefix, 2) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, prefix_sep, strlen(prefix_sep)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "gemini://example/", 17) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, label_sep, strlen(label_sep)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "label\n", 6) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_gemtext, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 32);
+    CHECK(capture.findings == 1);
+    if (mode == 0) CHECK(capture.zero_span > 0);
+    decode_bits_expect(registry, "gemtext", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, expected, sizeof(expected));
+    dedsec_buffer_free(&carrier);
+    {
+        dedsec_decode_request request = {variant, 0, NULL, 0};
+        dedsec_bitstream output;
+        dedsec_bitstream_init(&output);
+        CHECK(dedsec_decode_bits(registry, "gemtext", view(malformed, sizeof(malformed)),
+                                 &request, &output) == DEDSEC_EUTF8);
+        dedsec_bitstream_free(&output);
+    }
+}
+static void gemtext_boundary_expect(dedsec_registry *registry) {
+    static const char ordinary[] =
+        "prose\n=> gemini://example/ home\n=> gemini://example/ next\n";
+    static const char no_label[] =
+        "=> gemini://example/\n=>gemini://example/\n";
+    static const char nonlink[] = " = > gemini://example/ label\n";
+    gemtext_capture capture = {"gemtext-label-space-tab-bits-msb", 0, 0, 0};
+    dedsec_decode_request request = {"gemtext-label-width-low-bit", 0, NULL, 0};
+    dedsec_bitstream output;
+    CHECK(dedsec_detect_all(registry, view(ordinary, sizeof(ordinary) - 1),
+                            capture_gemtext, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 2 && capture.findings == 0);
+    capture.symbols = 0;
+    capture.findings = 0;
+    CHECK(dedsec_detect_all(registry, view(no_label, sizeof(no_label) - 1),
+                            capture_gemtext, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 0 && capture.findings == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "gemtext", view(no_label, sizeof(no_label) - 1),
+                             &request, &output) == DEDSEC_ENOTFOUND);
+    dedsec_bitstream_free(&output);
+    capture.variant = "gemtext-prefix-width-low-bit";
+    CHECK(dedsec_detect_all(registry, view(nonlink, sizeof(nonlink) - 1),
+                            capture_gemtext, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 0 && capture.findings == 0);
+}
+static void implicit_bidi_case_expect(dedsec_registry *registry) {
+    static const char *variant = "implicit-bidi-ltr-source-order-bits-msb";
+    static const uint8_t zero[] = {0x61, 0xd7, 0x90, 0x31, 0x0a};
+    static const uint8_t one[] = {0x61, 0x31, 0xd7, 0x90, 0x0a};
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const uint8_t all_zero[] = {0x00, 0x00, 0x00, 0x00};
+    static const uint8_t all_one[] = {0xff, 0xff, 0xff, 0xff};
+    static const uint8_t below_expected[] = {0x55, 0x55, 0x55, 0x54};
+    static const uint8_t malformed[] = {
+        0x61, 0xd7, 0x90, 0x31, 0x0a, 0xc0, 0xaf
+    };
+    static const uint8_t near_miss[] = {
+        0x61, 0xd7, 0x90, 0x31, 0x0d, 0x0a,
+        0x61, 0xd7, 0x91, 0x31, 0x0a,
+        0x61, 0xd7, 0x90, 0x32, 0x0a,
+        0x61, 0xd7, 0x90, 0x31
+    };
+    static const char noise[] = "ordinary prose\na1\nnot a slot\n";
+    dedsec_buffer carrier;
+    implicit_bidi_capture capture = {variant, {{0}}, 0, 0};
+    dedsec_bitstream output;
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        const uint8_t *slot = (i & 1u) ? one : zero;
+        CHECK(dedsec_buffer_append(&carrier, slot, sizeof(zero)) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 32 && capture.findings == 1);
+    for (i = 0; i < capture.symbols; ++i) {
+        CHECK(capture.events[i].kind == DEDSEC_DETECTION_SYMBOL);
+        CHECK(capture.events[i].symbol_width == 1);
+        CHECK(capture.events[i].symbol_value == (uint8_t)(i & 1u));
+        CHECK(capture.events[i].byte_offset == i * sizeof(zero));
+        CHECK(capture.events[i].byte_length == sizeof(zero));
+        CHECK(capture.events[i].evidence == 1);
+    }
+    decode_bits_expect(registry, "unicode", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, expected, sizeof(expected));
+
+    carrier.len = 0;
+    capture.symbols = 0;
+    capture.findings = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, zero, sizeof(zero)) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 32 && capture.findings == 0);
+    decode_bits_expect(registry, "unicode", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, all_zero, sizeof(all_zero));
+
+    carrier.len = 0;
+    capture.symbols = 0;
+    capture.findings = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, one, sizeof(one)) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 32 && capture.findings == 0);
+    decode_bits_expect(registry, "unicode", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, all_one, sizeof(all_one));
+
+    carrier.len = 0;
+    capture.symbols = 0;
+    capture.findings = 0;
+    for (i = 0; i < 31; ++i) {
+        const uint8_t *slot = (i & 1u) ? one : zero;
+        CHECK(dedsec_buffer_append(&carrier, slot, sizeof(zero)) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 31 && capture.findings == 0);
+    decode_bits_expect(registry, "unicode", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 31, below_expected, sizeof(below_expected));
+
+    capture.symbols = 0;
+    capture.findings = 0;
+    CHECK(dedsec_detect_all(registry, view(noise, sizeof(noise) - 1),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 0 && capture.findings == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "unicode", view(noise, sizeof(noise) - 1),
+                             &(dedsec_decode_request){variant, 0, NULL, 0},
+                             &output) == DEDSEC_ENOTFOUND);
+    dedsec_bitstream_free(&output);
+
+    capture.symbols = 0;
+    capture.findings = 0;
+    CHECK(dedsec_detect_all(registry, view(near_miss, sizeof(near_miss)),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 0 && capture.findings == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "unicode", view(near_miss, sizeof(near_miss)),
+                             &(dedsec_decode_request){variant, 0, NULL, 0},
+                             &output) == DEDSEC_ENOTFOUND);
+    dedsec_bitstream_free(&output);
+
+    capture.symbols = 0;
+    capture.findings = 0;
+    CHECK(dedsec_detect_all(registry, view(malformed, sizeof(malformed)),
+                            capture_implicit_bidi, &capture) == DEDSEC_OK);
+    CHECK(capture.symbols == 0 && capture.findings == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "unicode", view(malformed, sizeof(malformed)),
+                             &(dedsec_decode_request){variant, 0, NULL, 0},
+                             &output) == DEDSEC_EUTF8);
+    CHECK(output.bit_length == 0 && output.bytes.len == 0);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
+static void implicit_bidi_interaction_expect(dedsec_registry *registry) {
+    static const uint8_t zero[] = {0x61, 0xd7, 0x90, 0x31, 0x0a};
+    static const uint8_t one[] = {0x61, 0x31, 0xd7, 0x90, 0x0a};
+    static const char *variant = "implicit-bidi-ltr-source-order-bits-msb";
+    dedsec_buffer carrier;
+    implicit_bidi_interaction capture = {0};
+    dedsec_bitstream output;
+    dedsec_finding overlap[2];
+    size_t i;
+    capture.implicit.variant = variant;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        const uint8_t *slot = (i & 1u) ? one : zero;
+        CHECK(dedsec_buffer_append(&carrier, slot, sizeof(zero)) == DEDSEC_OK);
+    }
+    CHECK(dedsec_buffer_append(&carrier, "noise\r\n", 7) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_implicit_bidi_interaction, &capture) == DEDSEC_OK);
+    CHECK(capture.implicit.symbols == 32);
+    CHECK(capture.implicit.findings == 1);
+    CHECK(capture.have_line);
+    CHECK(capture.line.byte_offset == 4);
+    CHECK(capture.line.byte_length == 1);
+    CHECK(capture.implicit.events[0].byte_offset == 0);
+    CHECK(capture.implicit.events[0].byte_length == 5);
+    overlap[0] = capture.implicit.events[0];
+    overlap[1] = capture.line;
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_symbols_glue_source_order(overlap, 2, &output) == DEDSEC_EINVAL);
+    CHECK(output.bit_length == 0 && output.bytes.len == 0);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
 static void composite_source_order_expect(dedsec_registry *registry) {
     static const uint8_t expected[] = {'O', 'K', 'O', 'K'};
     static const uint8_t hyphen[2][3] = {
@@ -326,6 +708,189 @@ static void trailing_hspace_case_expect(dedsec_registry *registry) {
     dedsec_buffer_free(&carrier);
 }
 
+static void dicp_coverage_expect(dedsec_registry *registry) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const dedsec_codepoint_symbol symbols[] = {
+        {0x17b4, 0}, {0x17b5, 1}
+    };
+    static const dedsec_codepoint_alphabet alphabet = {symbols, 2, 1, 0};
+    static const uint8_t non_dicp_slot[] = {
+        0xe1, 0x9e, 0x80, 0xe1, 0x9e, 0xb6, '|'
+    };
+    dedsec_buffer carrier;
+    dicp_capture capture = {0};
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        static const uint8_t ka[] = {0xe1, 0x9e, 0x80};
+        static const uint8_t aq[] = {0xe1, 0x9e, 0xb4};
+        static const uint8_t aa[] = {0xe1, 0x9e, 0xb5};
+        CHECK(dedsec_buffer_append(&carrier, ka, sizeof(ka)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, (i & 1u) ? aa : aq, sizeof(aq)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "|", 1) == DEDSEC_OK);
+    }
+    CHECK(carrier.len == 224);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_dicp, &capture) == DEDSEC_OK);
+    CHECK(capture.findings == 1);
+    CHECK(capture.symbols == 0);
+    CHECK(capture.first_offset == 3);
+    CHECK(capture.evidence == 32);
+    {
+        dicp_observation_capture observations = {0};
+        CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                                capture_dicp_observations, &observations) == DEDSEC_OK);
+        CHECK(observations.value_count == 32);
+        CHECK(observations.context_count == 32);
+        for (i = 0; i < 32; ++i) {
+            uint64_t cp = (i & 1u) ? 0x17b5u : 0x17b4u;
+            CHECK(observations.values[i].byte_offset == i * 7u + 3u);
+            CHECK(observations.values[i].byte_length == 3);
+            CHECK(observations.values[i].evidence == cp);
+            CHECK(observations.contexts[i].byte_offset == i * 7u);
+            CHECK(observations.contexts[i].byte_length == 6);
+            CHECK(observations.contexts[i].evidence == cp);
+        }
+    }
+    decode_bits_expect(registry, "unicode", "codepoint-map-msb",
+                       carrier.ptr, carrier.len, &alphabet, sizeof(alphabet),
+                       32, expected, sizeof(expected));
+    {
+        static const uint8_t nel[] = {0xc2, 0x85};
+        c1_whitespace_overlap_capture overlap = {0};
+        CHECK(dedsec_detect_all(registry, view(nel, sizeof(nel)),
+                                capture_c1_whitespace_overlap, &overlap) == DEDSEC_OK);
+        CHECK(overlap.c1_count == 1 && overlap.whitespace_count == 1);
+    }
+    capture = (dicp_capture){0};
+    CHECK(dedsec_detect_all(registry, view(non_dicp_slot, sizeof(non_dicp_slot)),
+                            capture_dicp, &capture) == DEDSEC_OK);
+    CHECK(capture.findings == 0 && capture.symbols == 0);
+    CHECK(dedsec_buffer_append(&carrier, "\xe1\x9e", 2) == DEDSEC_OK);
+    capture = (dicp_capture){0};
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_dicp, &capture) == DEDSEC_OK);
+    CHECK(capture.findings == 0 && capture.symbols == 0);
+    {
+        dicp_observation_capture observations = {0};
+        CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                                capture_dicp_observations, &observations) == DEDSEC_OK);
+        CHECK(observations.value_count == 0 && observations.context_count == 0);
+    }
+    dedsec_buffer_free(&carrier);
+}
+
+static void unicode_whitespace_coverage_expect(dedsec_registry *registry) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const dedsec_codepoint_symbol symbols[] = {
+        {0x2009, 0}, {0x202f, 1}
+    };
+    static const dedsec_codepoint_alphabet alphabet = {symbols, 2, 1, 0};
+    dedsec_buffer carrier;
+    unicode_whitespace_capture capture = {0};
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        static const uint8_t thin[] = {0xe2, 0x80, 0x89};
+        static const uint8_t narrow_nbsp[] = {0xe2, 0x80, 0xaf};
+        CHECK(dedsec_buffer_append(&carrier, "1", 1) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, (i & 1u) ? narrow_nbsp : thin,
+                                   sizeof(thin)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "2|", 2) == DEDSEC_OK);
+    }
+    CHECK(carrier.len == 192);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_unicode_whitespace, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 32);
+    for (i = 0; i < capture.count; ++i) {
+        CHECK(capture.events[i].byte_offset == i * 6u + 1u);
+        CHECK(capture.events[i].byte_length == 3);
+        CHECK(capture.events[i].evidence == ((i & 1u) ? 0x202fu : 0x2009u));
+        CHECK(capture.events[i].score == 0);
+    }
+    decode_bits_expect(registry, "unicode", "codepoint-map-msb",
+                       carrier.ptr, carrier.len, &alphabet, sizeof(alphabet),
+                       32, expected, sizeof(expected));
+    CHECK(dedsec_buffer_append(&carrier, "\xe2\x80", 2) == DEDSEC_OK);
+    capture = (unicode_whitespace_capture){0};
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_unicode_whitespace, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_buffer_free(&carrier);
+}
+
+static void c1_control_coverage_expect(dedsec_registry *registry) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const dedsec_codepoint_symbol symbols[] = {
+        {0x009b, 0}, {0x009f, 1}
+    };
+    static const dedsec_codepoint_alphabet alphabet = {symbols, 2, 1, 0};
+    dedsec_buffer carrier;
+    c1_control_capture capture = {0};
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        static const uint8_t csi[] = {0xc2, 0x9b};
+        static const uint8_t apc[] = {0xc2, 0x9f};
+        CHECK(dedsec_buffer_append(&carrier, "x", 1) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, (i & 1u) ? apc : csi,
+                                   sizeof(csi)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "|", 1) == DEDSEC_OK);
+    }
+    CHECK(carrier.len == 128);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_c1_controls, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 32);
+    for (i = 0; i < capture.count; ++i) {
+        CHECK(capture.events[i].byte_offset == i * 4u + 1u);
+        CHECK(capture.events[i].byte_length == 2);
+        CHECK(capture.events[i].evidence == ((i & 1u) ? 0x009fu : 0x009bu));
+        CHECK(capture.events[i].score == 0);
+    }
+    decode_bits_expect(registry, "unicode", "codepoint-map-msb",
+                       carrier.ptr, carrier.len, &alphabet, sizeof(alphabet),
+                       32, expected, sizeof(expected));
+    CHECK(dedsec_buffer_append(&carrier, "\xc2", 1) == DEDSEC_OK);
+    capture = (c1_control_capture){0};
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_c1_controls, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_buffer_free(&carrier);
+}
+
+static void non_ignorable_format_control_coverage_expect(dedsec_registry *registry) {
+    static const uint8_t controls[] = {
+        'a', 0xd8,0x80, '|',             /* U+0600 PCM */
+        'b', 0xef,0xbf,0xb9, '|',        /* U+FFF9 interlinear anchor */
+        'c', 0xf0,0x93,0x90,0xb0         /* U+13430 Egyptian joiner */
+    };
+    static const uint8_t malformed[] = {'a', 0xd8,0x80, 0xc0,0xaf};
+    static const uint64_t expected_cp[] = {0x0600u, 0xfff9u, 0x13430u};
+    static const size_t expected_offsets[] = {1u, 5u, 10u};
+    static const size_t expected_lengths[] = {2u, 3u, 4u};
+    format_control_capture capture = {0};
+    size_t i;
+    CHECK(dedsec_detect_all(registry, view(controls, sizeof(controls)),
+                            capture_non_ignorable_format_controls,
+                            &capture) == DEDSEC_OK);
+    CHECK(capture.value_count == 3 && capture.context_count == 3);
+    for (i = 0; i < 3; ++i) {
+        CHECK(capture.values[i].byte_offset == expected_offsets[i]);
+        CHECK(capture.values[i].byte_length == expected_lengths[i]);
+        CHECK(capture.values[i].evidence == expected_cp[i]);
+        CHECK(capture.values[i].score == 0);
+        CHECK(capture.contexts[i].byte_offset == expected_offsets[i] - 1u);
+        CHECK(capture.contexts[i].byte_length == expected_lengths[i] + 1u);
+        CHECK(capture.contexts[i].evidence == expected_cp[i]);
+        CHECK(capture.contexts[i].score == 0);
+    }
+    capture = (format_control_capture){0};
+    CHECK(dedsec_detect_all(registry, view(malformed, sizeof(malformed)),
+                            capture_non_ignorable_format_controls,
+                            &capture) == DEDSEC_OK);
+    CHECK(capture.value_count == 0 && capture.context_count == 0);
+}
+
 int main(void) {
     dedsec_registry registry;
     size_t findings = 0, matches = 0;
@@ -388,6 +953,9 @@ int main(void) {
         0xed,0xa0,0xbd,0xed,0xb8,0x80, 0xf0,0x9f,0x98,0x80,
         0xed,0xa0,0xbd,0xed,0xb8,0x80, 0xed,0xa0,0xbd,0xed,0xb8,0x80
     };
+    static const uint8_t standard_astral_only[] = {
+        0xf0,0x9f,0x98,0x80, 0xf0,0x9f,0x98,0x80
+    };
     static const uint8_t water[] = {0xe6,0xb0,0xb4};
     static const uint8_t json_escape[] = {'\\','u','6','C','3','4'};
     static const uint8_t json_carrier[] = {
@@ -427,12 +995,41 @@ int main(void) {
         "TWVldCBhdCB0aGUgbG9hZGluZyBkb2NrIGF0IG1pZG5pZ2h0Lg==";
     static const char hidden_nested[] =
         "SlZTV0s1QkFNRjJDQTVESU1VUUdZMzNCTVJVVzRaWkFNUlhXRzJaQU1GMkNBM0xKTVJYR1NaM0lPUVhBPT09PQ==";
+    /* CP037 bytes for "HELLO WORLD HELLO WORLD", lifted one byte per
+     * Unicode U+00xx scalar and then serialized as strict UTF-8. The filter
+     * must pass this encoding-shaped result without claiming a code page. */
+    static const uint8_t byte_lifted_ebcdic[] = {
+        0xc3,0x88, 0xc3,0x85, 0xc3,0x93, 0xc3,0x93, 0xc3,0x96, 0x40,
+        0xc3,0xa6, 0xc3,0x96, 0xc3,0x99, 0xc3,0x93, 0xc3,0x84, 0x40,
+        0xc3,0x88, 0xc3,0x85, 0xc3,0x93, 0xc3,0x93, 0xc3,0x96, 0x40,
+        0xc3,0xa6, 0xc3,0x96, 0xc3,0x99, 0xc3,0x93, 0xc3,0x84
+    };
     static const uint8_t ciphertext_like[] = {
         0xa4,0x72,0x19,0xef,0x03,0x88,0xd1,0x5c,0xb7,0x26,0x90,0x4a,0xfd,0x61,0x0e,0xc3,
         0x58,0x9b,0x2d,0xe0,0x74,0x11,0xca,0x3f,0x86,0xd5,0x49,0xb2,0x07,0xec,0x68,0x95
     };
+    /* Harmless Enigma-style Latin ciphertext represented as A=0 through
+     * Z=25 in five-bit symbols. 33 symbols produce 165 bits, deliberately
+     * leaving a five-bit tail instead of a byte-aligned stream. */
+    static const char enigma_five_bit[] = "QWERTYUIOPASDFGHJKLZXCVBNMQAZWSFX";
+    static const uint8_t low_grade_opaque[] = {
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    };
     static const char ciphertext_b32[] =
         "URZBT3YDRDIVZNZGSBFP2YIOYNMJWLPAOQI4UP4G2VE3EB7MNCKQ====";
+    static const char nested_opaque[] =
+        "VVJaQlQzWURSRElWWk5aR1NCRlAyWUlPWU09PT09PT0=";
+    static const char reversed_after_b64[] =
+        "gkLCIgSCQsIiBIJCwiIEgkLCIgSCQsIiBIJCwiIEgkLCIgSCQsIi";
+    static const uint8_t shifted_opaque[] = {
+        0x88,0x89,0x88,0x8a,0x8b,0x88,0x8c,0x8d,
+        0x88,0x8e,0x8f,0x88,0x88,0x89,0x8a,0x8b
+    };
+    static const uint8_t opaque_tie[] = {
+        0x88,0x89,0x8a,0x8b,0x8c,0x8d,0x8e,0x8f,
+        0x88,0x89,0x8a,0x8b,0x8c,0x8d,0x8e,0x8f
+    };
     static const char line_forms[] = "\n\r\n\n\r\n\n\r\n\n\r\n";
     static const char b64[] = "T0s=";
     static const char b32[] = "J5FQ====";
@@ -466,6 +1063,8 @@ int main(void) {
         static const uint8_t hyphen_one[] = {0xe2, 0x80, 0x91};
         static const uint8_t mark_order_zero[] = {0x61, 0xcc, 0xa3, 0xcc, 0x81};
         static const uint8_t mark_order_one[] = {0x61, 0xcc, 0x81, 0xcc, 0xa3};
+        static const uint8_t kelvin_zero[] = {0x4b};
+        static const uint8_t kelvin_one[] = {0xe2, 0x84, 0xaa};
         dedsec_view zero = {space_zero, sizeof(space_zero)};
         dedsec_view one = {space_one, sizeof(space_one)};
         identity_case_expect(&registry, "space-identity-bits", zero, one);
@@ -478,6 +1077,9 @@ int main(void) {
         zero.ptr = mark_order_zero; zero.len = sizeof(mark_order_zero);
         one.ptr = mark_order_one; one.len = sizeof(mark_order_one);
         identity_case_expect(&registry, "canonical-combining-order-bits", zero, one);
+        zero.ptr = kelvin_zero; zero.len = sizeof(kelvin_zero);
+        one.ptr = kelvin_one; one.len = sizeof(kelvin_one);
+        identity_case_expect(&registry, "canonical-kelvin-identity-bits", zero, one);
     }
     {
         static const uint8_t lf[] = {0x0a};
@@ -494,7 +1096,18 @@ int main(void) {
     mongolian_fvs_case_expect(&registry);
     composite_source_order_expect(&registry);
     trailing_hspace_case_expect(&registry);
-    CHECK(registry.count == 7);
+    gemtext_case_expect(&registry, "gemtext-prefix-width-low-bit", 0);
+    gemtext_case_expect(&registry, "gemtext-prefix-space-tab-bits-msb", 1);
+    gemtext_case_expect(&registry, "gemtext-label-width-low-bit", 2);
+    gemtext_case_expect(&registry, "gemtext-label-space-tab-bits-msb", 3);
+    gemtext_boundary_expect(&registry);
+    implicit_bidi_case_expect(&registry);
+    implicit_bidi_interaction_expect(&registry);
+    dicp_coverage_expect(&registry);
+    unicode_whitespace_coverage_expect(&registry);
+    c1_control_coverage_expect(&registry);
+    non_ignorable_format_control_coverage_expect(&registry);
+    CHECK(registry.count == 8);
     memcpy(zw_with_tail, zw, sizeof(zw));
     zw_with_tail[sizeof(zw)] = 0xe2;
     zw_with_tail[sizeof(zw) + 1] = 0x80;
@@ -525,6 +1138,11 @@ int main(void) {
                          sizeof(homoglyph_alpha), "OK");
     decode_expect(&registry, "encoding", "utf8-cesu8-form-bits-msb",
                   cesu, sizeof(cesu), "OK");
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry, view(standard_astral_only,
+                                             sizeof(standard_astral_only)),
+                            capture_cesu_symbol, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
     decode_params_expect(&registry, "surface", "token-map-msb",
                          json_carrier, sizeof(json_carrier), &json_alpha,
                          sizeof(json_alpha), "OK");
@@ -613,6 +1231,21 @@ int main(void) {
     CHECK(dedsec_search(view(hay, sizeof(hay)-1), &nv, 1, &chain, 1,
                         count_match, &matches) == DEDSEC_OK);
     CHECK(matches == 1);
+    {
+        static const uint8_t dicp_hay[] = {
+            'a', 0xe1, 0x9e, 0xb4, 'b'
+        };
+        static const uint8_t dicp_needle[] = {'a', 'b'};
+        dedsec_transform dicp_op[] = {
+            {"strip-known-ignorables", dedsec_transform_strip_known_ignorables, NULL}
+        };
+        dedsec_chain dicp_chain = {dicp_op, 1};
+        size_t dicp_matches = 0;
+        CHECK(dedsec_search(view(dicp_hay, sizeof(dicp_hay)),
+                            &(dedsec_view){dicp_needle, sizeof(dicp_needle)}, 1,
+                            &dicp_chain, 1, count_match, &dicp_matches) == DEDSEC_OK);
+        CHECK(dicp_matches == 1);
+    }
     findings = 0;
     CHECK(dedsec_detect_all(&registry, view(normal, sizeof(normal)-1),
                             count_finding, &findings) == DEDSEC_OK);
@@ -631,6 +1264,10 @@ int main(void) {
     filter_bytes_expect((const uint8_t *)hidden_nested, sizeof(hidden_nested)-1,
                         DEDSEC_PLAINTEXT_LIKELY,
                         DEDSEC_PLAINTEXT_BASE64 | DEDSEC_PLAINTEXT_BASE32);
+    filter_bytes_expect(byte_lifted_ebcdic, sizeof(byte_lifted_ebcdic),
+                        DEDSEC_PLAINTEXT_POSSIBLE,
+                        DEDSEC_PLAINTEXT_UTF8 |
+                        DEDSEC_PLAINTEXT_OPAQUE_DATA);
     {
         dedsec_bitstream stream;
         dedsec_bitstream_filter_result result;
@@ -652,7 +1289,148 @@ int main(void) {
         for (i = 0; i < sizeof(ciphertext_like); ++i)
             CHECK(dedsec_bitstream_append_bits(&stream, ciphertext_like[i], 8, 0) == DEDSEC_OK);
         CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
-        CHECK(result.verdict == DEDSEC_PLAINTEXT_REJECT);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(enigma_five_bit)-1; ++i) {
+            uint8_t symbol = (uint8_t)(enigma_five_bit[i] - 'A');
+            CHECK(dedsec_bitstream_append_bits(&stream, symbol, 5, 0) == DEDSEC_OK);
+        }
+        CHECK(stream.bit_length == (sizeof(enigma_five_bit)-1) * 5u);
+        CHECK(stream.bit_length % 8u == 5u);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        CHECK(result.bit_offset == 0);
+        CHECK(result.decoded_length == stream.bit_length / 8u);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_PARTIAL_BITS) != 0);
+        CHECK(result.source_bit_length == 165u);
+        CHECK(result.source_bits_consumed == 165u);
+        CHECK(result.assessed_trailing_bits == 5u);
+        CHECK(result.ignored_trailing_bits == 0u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(enigma_five_bit)-2; ++i) {
+            uint8_t symbol = (uint8_t)(enigma_five_bit[i] - 'A');
+            CHECK(dedsec_bitstream_append_bits(&stream, symbol, 5, 0) == DEDSEC_OK);
+        }
+        CHECK(stream.bit_length == 160u);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_PARTIAL_BITS) == 0);
+        CHECK(result.source_bits_consumed == 160u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        static const char accidental_utf8[] = "LEVMHOLQJITELOJCHOVGHQRSREJUTMPU";
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(accidental_utf8)-1; ++i) {
+            uint8_t symbol = (uint8_t)(accidental_utf8[i] - 'A');
+            CHECK(dedsec_bitstream_append_bits(&stream, symbol, 5, 0) == DEDSEC_OK);
+        }
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK(result.verdict != DEDSEC_PLAINTEXT_LIKELY);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        CHECK(dedsec_bitstream_append_bits(&stream, 0, 1, 0) == DEDSEC_OK);
+        for (i = 0; i < sizeof(shifted_opaque); ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, shifted_opaque[i], 8, 0) == DEDSEC_OK);
+        CHECK(stream.bit_length == 129u);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        CHECK(result.bit_offset == 1u);
+        CHECK(result.source_bits_consumed == 128u);
+        CHECK(result.ignored_trailing_bits == 0u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(opaque_tie); ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, opaque_tie[i], 8, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        CHECK(result.bit_offset == 0u);
+        CHECK(result.equal_score_interpretations > 1u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        unsigned i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < 16u; ++i) {
+            CHECK(dedsec_bitstream_append_bits(&stream, 0xc2u, 8, 0) == DEDSEC_OK);
+            CHECK(dedsec_bitstream_append_bits(&stream,
+                                               (uint8_t)(0x80u + i), 8, 0) == DEDSEC_OK);
+        }
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        CHECK(result.bit_offset == 0u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(nested_opaque)-1; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, (uint8_t)nested_opaque[i], 8, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & (DEDSEC_PLAINTEXT_BASE64 |
+                               DEDSEC_PLAINTEXT_BASE32 |
+                               DEDSEC_PLAINTEXT_OPAQUE_DATA)) ==
+              (DEDSEC_PLAINTEXT_BASE64 | DEDSEC_PLAINTEXT_BASE32 |
+               DEDSEC_PLAINTEXT_OPAQUE_DATA));
+        CHECK(result.transform_depth == 2u);
+        CHECK(result.decoded_length == 16u);
+        CHECK(result.transform_count >= 2u);
+        CHECK(result.transforms[0] == DEDSEC_FILTER_TRANSFORM_BASE64);
+        CHECK(result.transforms[1] == DEDSEC_FILTER_TRANSFORM_BASE32);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(reversed_after_b64)-1; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, (uint8_t)reversed_after_b64[i], 8, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & (DEDSEC_PLAINTEXT_BASE64 |
+                               DEDSEC_PLAINTEXT_BIT_REVERSED)) ==
+              (DEDSEC_PLAINTEXT_BASE64 | DEDSEC_PLAINTEXT_BIT_REVERSED));
+        CHECK(result.transform_count >= 2u);
+        CHECK(result.transforms[0] == DEDSEC_FILTER_TRANSFORM_BASE64);
+        CHECK(result.transforms[1] == DEDSEC_FILTER_TRANSFORM_REVERSE_BITS);
         dedsec_bitstream_free(&stream);
     }
     {
@@ -663,7 +1441,22 @@ int main(void) {
         for (i = 0; i < sizeof(ciphertext_b32)-1; ++i)
             CHECK(dedsec_bitstream_append_bits(&stream, (uint8_t)ciphertext_b32[i], 8, 0) == DEDSEC_OK);
         CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((result.flags & (DEDSEC_PLAINTEXT_BASE32 |
+                               DEDSEC_PLAINTEXT_OPAQUE_DATA)) ==
+              (DEDSEC_PLAINTEXT_BASE32 | DEDSEC_PLAINTEXT_OPAQUE_DATA));
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(low_grade_opaque); ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, low_grade_opaque[i], 8, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
         CHECK(result.verdict == DEDSEC_PLAINTEXT_REJECT);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) == 0);
         dedsec_bitstream_free(&stream);
     }
     {
@@ -677,6 +1470,23 @@ int main(void) {
         CHECK(dedsec_bitstream_filter(&malformed, &result) == DEDSEC_EINVAL);
         dedsec_bitstream_free(&empty);
         dedsec_bitstream_free(&malformed);
+    }
+    {
+        dedsec_bitstream malformed_length, malformed_padding;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&malformed_length);
+        for (i = 0; i < 16u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&malformed_length,
+                                               (uint8_t)i, 8, 0) == DEDSEC_OK);
+        malformed_length.bit_length -= 8u;
+        CHECK(dedsec_bitstream_filter(&malformed_length, &result) == DEDSEC_EINVAL);
+        dedsec_bitstream_init(&malformed_padding);
+        CHECK(dedsec_bitstream_append_bits(&malformed_padding, 0x15, 5, 0) == DEDSEC_OK);
+        malformed_padding.bytes.ptr[0] |= 1u;
+        CHECK(dedsec_bitstream_filter(&malformed_padding, &result) == DEDSEC_EINVAL);
+        dedsec_bitstream_free(&malformed_length);
+        dedsec_bitstream_free(&malformed_padding);
     }
     {
         static const uint8_t arabic_alef[] = {0xd8, 0xa7};

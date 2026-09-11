@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define DEDSEC_ABI_VERSION 3u
+#define DEDSEC_ABI_VERSION 5u
 
 /* Filters for Markdown unordered-list trial decoders. */
 #define DEDSEC_MARKDOWN_UL_TOP_LEVEL_ONLY 0x00000001u
@@ -45,7 +45,9 @@ typedef struct dedsec_bitstream {
 /* A conservative plaintext-only assessment of an extracted bitstream.
  * REJECT means "not plausible supported plaintext", not "no hidden data".
  * Ciphertext, compressed data, binary formats, and unknown encodings are
- * intentionally outside this filter's scope. */
+ * normally outside this filter's scope. It may pass sufficiently long,
+ * non-degenerate opaque data for backend review without identifying or
+ * decoding it. */
 typedef enum dedsec_plaintext_verdict {
     DEDSEC_PLAINTEXT_REJECT = 0,
     DEDSEC_PLAINTEXT_INSUFFICIENT = 1,
@@ -62,19 +64,43 @@ typedef enum dedsec_plaintext_verdict {
 #define DEDSEC_PLAINTEXT_BASE64URL      0x00000040u
 #define DEDSEC_PLAINTEXT_BIT_REVERSED   0x00000100u
 #define DEDSEC_PLAINTEXT_BIT_INVERTED   0x00000200u
+#define DEDSEC_PLAINTEXT_OPAQUE_DATA    0x00000400u
+#define DEDSEC_PLAINTEXT_PARTIAL_BITS   0x00000800u
+
+#define DEDSEC_FILTER_MAX_TRANSFORMS 8u
+
+typedef enum dedsec_filter_transform {
+    DEDSEC_FILTER_TRANSFORM_REVERSE_BITS = 1,
+    DEDSEC_FILTER_TRANSFORM_INVERT_BITS = 2,
+    DEDSEC_FILTER_TRANSFORM_BASE16 = 3,
+    DEDSEC_FILTER_TRANSFORM_BASE32 = 4,
+    DEDSEC_FILTER_TRANSFORM_BASE32HEX = 5,
+    DEDSEC_FILTER_TRANSFORM_BASE64 = 6,
+    DEDSEC_FILTER_TRANSFORM_BASE64URL = 7
+} dedsec_filter_transform;
 
 typedef struct dedsec_bitstream_filter_result {
     dedsec_plaintext_verdict verdict;
     uint32_t score;       /* heuristic, 0..100; never a probability */
     uint32_t flags;
     unsigned bit_offset;  /* skipped leading bits, 0..7 */
-    unsigned transform_depth;
-    size_t decoded_length;
+    unsigned transform_depth; /* number of decoded radix layers */
+    size_t decoded_length;    /* bytes at the final assessment stage */
+    size_t source_bit_length; /* exact input bit_length */
+    size_t source_bits_consumed; /* excludes bit_offset and ignored tail */
+    unsigned ignored_trailing_bits;  /* 0..7, not assessed */
+    unsigned assessed_trailing_bits; /* 0..7, opaque balance only */
+    unsigned transform_count; /* ordered source-to-result operations */
+    dedsec_filter_transform transforms[DEDSEC_FILTER_MAX_TRANSFORMS];
+    size_t equal_score_interpretations; /* includes selected interpretation */
 } dedsec_bitstream_filter_result;
 
 typedef enum dedsec_detection_kind {
     DEDSEC_DETECTION_FINDING = 0,
-    DEDSEC_DETECTION_SYMBOL = 1
+    DEDSEC_DETECTION_SYMBOL = 1,
+    /* A provenance-bearing, non-bit property observation. It is neither an
+     * alert score nor evidence of a payload. */
+    DEDSEC_DETECTION_OBSERVATION = 2
 } dedsec_detection_kind;
 
 typedef struct dedsec_finding {
@@ -297,6 +323,7 @@ const dedsec_module *dedsec_builtin_encoding_module(void);
 const dedsec_module *dedsec_builtin_surface_module(void);
 const dedsec_module *dedsec_builtin_structure_module(void);
 const dedsec_module *dedsec_builtin_markdown_module(void);
+const dedsec_module *dedsec_builtin_gemtext_module(void);
 
 #ifdef __cplusplus
 }

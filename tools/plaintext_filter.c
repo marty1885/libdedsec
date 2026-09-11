@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s FILE [FILE ...]\n", argv[0]);
         return 2;
     }
-    puts("file\tverdict\tscore\tflags\tbit_offset\ttransform_depth\tdecoded_bytes");
+    puts("file\tverdict\tscore\tflags\tbit_offset\ttransform_depth\tdecoded_bytes\tsource_bits\tconsumed_bits\tignored_tail_bits\tassessed_tail_bits\tequal_score_interpretations");
     for (i = 1; i < argc; ++i) {
         dedsec_bitstream stream;
         dedsec_bitstream_filter_result result;
@@ -66,9 +66,12 @@ int main(int argc, char **argv) {
             failed = 1;
             continue;
         }
-        printf("%s\t%s\t%u\t%u\t%u\t%u\t%zu\n", argv[i],
+        printf("%s\t%s\t%u\t%u\t%u\t%u\t%zu\t%zu\t%zu\t%u\t%u\t%zu\n", argv[i],
                verdict_name(result.verdict), result.score, result.flags,
-               result.bit_offset, result.transform_depth, result.decoded_length);
+               result.bit_offset, result.transform_depth, result.decoded_length,
+               result.source_bit_length, result.source_bits_consumed,
+               result.ignored_trailing_bits, result.assessed_trailing_bits,
+               result.equal_score_interpretations);
         dedsec_bitstream_free(&stream);
     }
     return failed;

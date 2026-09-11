@@ -1,5 +1,7 @@
 #include "internal.h"
 
+#include <string.h>
+
 typedef struct bidi_frame {
     int visible;
     int after_arabic_letter;
@@ -19,6 +21,7 @@ typedef struct unicode_scan {
     size_t first_mongolian_fvs;
     size_t first_noncharacter, first_shorthand, first_iteration;
     uint32_t previous_cp;
+    size_t previous_offset, previous_length;
     int have_previous;
     int in_tag_payload;
     bidi_frame bidi_stack[128];
@@ -31,17 +34,17 @@ static int in_range(uint32_t v, uint32_t lo, uint32_t hi) {
 static int validate_only(void *opaque, const dedsec_scalar *s) {
     (void)opaque; (void)s; return 0;
 }
-static int known_ignorable(uint32_t cp) {
-    return cp == 0x00ad || cp == 0x034f || cp == 0x061c ||
-           in_range(cp, 0x200b, 0x200f) || in_range(cp, 0x202a, 0x202e) ||
-           in_range(cp, 0x2060, 0x206f) || cp == 0xfeff ||
-           in_range(cp, 0xe0001, 0xe007f);
-}
 static int arabic_letter(uint32_t cp) {
     return in_range(cp, 0x0620, 0x063f) || in_range(cp, 0x0641, 0x064a) ||
            in_range(cp, 0x066e, 0x066f) || in_range(cp, 0x0671, 0x06d3) ||
            in_range(cp, 0x06e5, 0x06e6) || in_range(cp, 0x06ee, 0x06ef) ||
            in_range(cp, 0x06fa, 0x06fc) || cp == 0x06ff;
+}
+static int specialized_ignorable_slot(const unicode_scan *x, uint32_t cp) {
+    /* The reviewed U+1820 + FVS1/FVS2 lane already has raw symbol ownership.
+     * Do not add that same selector to the generic aggregate observation. */
+    return x->have_previous && x->previous_cp == 0x1820 &&
+           (cp == 0x180b || cp == 0x180c);
 }
 static int scan_scalar(void *opaque, const dedsec_scalar *s) {
     unicode_scan *x = (unicode_scan *)opaque;
@@ -73,12 +76,64 @@ static int scan_scalar(void *opaque, const dedsec_scalar *s) {
                 x->bidi_stack[x->bidi_depth - 1].visible = 1;
             }
         } else ++x->unmatched_pdi;
-    } else if (x->bidi_depth && !known_ignorable(cp)) {
+    } else if (x->bidi_depth && !dedsec_unicode_is_default_ignorable(cp)) {
         x->bidi_stack[x->bidi_depth - 1].visible = 1;
     }
-    if (known_ignorable(cp)) {
+    if (dedsec_unicode_is_default_ignorable(cp) &&
+        !specialized_ignorable_slot(x, cp)) {
         if (!x->ignorables) x->first_ignorable = s->byte_offset;
         ++x->ignorables;
+    }
+    if (dedsec_unicode_is_default_ignorable(cp)) {
+        emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                          "default-ignorable-scalar",
+                                          s->byte_offset, s->byte_length, cp);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+        if (x->have_previous) {
+            emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                              "default-ignorable-adjacent-context",
+                                              x->previous_offset,
+                                              x->previous_length + s->byte_length,
+                                              cp);
+            if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+        }
+    }
+    /* Non-ASCII White_Space is a raw property observation, not an ASCII
+     * layout feature, identity assertion, or bit symbol. */
+    if (cp > 0x7fu && dedsec_unicode_is_white_space(cp)) {
+        emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                          "unicode-white-space-scalar",
+                                          s->byte_offset, s->byte_length, cp);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+    }
+    /* C1 controls are retained as zero-score forensic observations. C0 and
+     * DEL remain byte-oriented/input-specific concerns and are not streamed
+     * here to avoid changing existing ASCII layout semantics. */
+    if (cp >= 0x0080u && dedsec_unicode_is_control(cp)) {
+        emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                          "unicode-c1-control-scalar",
+                                          s->byte_offset, s->byte_length, cp);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+    }
+    /* Cf does not imply invisibility. The residual after Default_Ignorable
+     * includes prepended concatenation marks, interlinear annotation controls,
+     * and Egyptian shaping controls. Preserve each raw value and conservative
+     * preceding-scalar dependency context for forensic review; never assign a
+     * bit or decoder without a caller-supplied grammar/rendering contract. */
+    if (dedsec_unicode_is_format_control(cp) &&
+        !dedsec_unicode_is_default_ignorable(cp)) {
+        emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                          "unicode-non-ignorable-format-control-scalar",
+                                          s->byte_offset, s->byte_length, cp);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+        if (x->have_previous) {
+            emitted = dedsec_emit_observation(x->emit, x->user, "unicode",
+                                              "unicode-non-ignorable-format-control-adjacent-context",
+                                              x->previous_offset,
+                                              x->previous_length + s->byte_length,
+                                              cp);
+            if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+        }
     }
     if (cp == 0x200b) ++x->zwsp;
     if (cp == 0x200c) ++x->zwnj;
@@ -169,6 +224,8 @@ static int scan_scalar(void *opaque, const dedsec_scalar *s) {
         if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
     }
     x->previous_cp = cp;
+    x->previous_offset = s->byte_offset;
+    x->previous_length = s->byte_length;
     x->have_previous = 1;
     return 0;
 }
@@ -184,6 +241,86 @@ static dedsec_status emit_count(unicode_scan *x, uint64_t count, size_t offset,
                                offset, 0, score, count);
 }
 
+/* This is deliberately a source-order observation, not a general UAX #9
+ * implementation.  Under the reviewed contract each complete LF-terminated
+ * five-byte record starts with ASCII 'a' and is exactly one of these two
+ * spellings.  The leading L scalar establishes the standalone LTR paragraph
+ * context used by the independent validation; no inferred context is used. */
+static int implicit_bidi_record(dedsec_view input, size_t start, size_t end,
+                                uint8_t *value) {
+    static const uint8_t zero[] = {0x61, 0xd7, 0x90, 0x31, 0x0a};
+    static const uint8_t one[] = {0x61, 0x31, 0xd7, 0x90, 0x0a};
+    if (end < start || end - start != sizeof(zero)) return 0;
+    if (memcmp(input.ptr + start, zero, sizeof(zero)) == 0) {
+        *value = 0;
+        return 1;
+    }
+    if (memcmp(input.ptr + start, one, sizeof(one)) == 0) {
+        *value = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static dedsec_status scan_implicit_bidi(dedsec_view input,
+                                        dedsec_finding_fn emit, void *user,
+                                        uint64_t *zero, uint64_t *one,
+                                        size_t *first, size_t *last) {
+    size_t start = 0;
+    int have_record = 0;
+    while (start < input.len) {
+        size_t end = start;
+        uint8_t value;
+        while (end < input.len && input.ptr[end] != 0x0a) ++end;
+        if (end < input.len) {
+            size_t record_end = end + 1;
+            if (implicit_bidi_record(input, start, record_end, &value)) {
+                dedsec_status s;
+                if (value) {
+                    if (*one == UINT64_MAX) return DEDSEC_ENOMEM;
+                    ++*one;
+                } else {
+                    if (*zero == UINT64_MAX) return DEDSEC_ENOMEM;
+                    ++*zero;
+                }
+                if (!have_record) {
+                    *first = start;
+                    have_record = 1;
+                }
+                *last = record_end;
+                s = dedsec_emit_symbol(emit, user, "unicode",
+                                       "implicit-bidi-source-order-collision",
+                                       "implicit-bidi-ltr-source-order-bits-msb",
+                                       start, record_end - start, value, 1);
+                if (s != DEDSEC_OK) return s;
+            }
+            start = record_end;
+        } else {
+            /* An unterminated final line is never a complete slot. */
+            break;
+        }
+    }
+    return DEDSEC_OK;
+}
+
+static dedsec_status detect_implicit_bidi(dedsec_view input,
+                                          dedsec_finding_fn emit, void *user) {
+    uint64_t zero = 0, one = 0, total, minority;
+    size_t first = 0, last = 0;
+    dedsec_status s;
+    s = scan_implicit_bidi(input, emit, user, &zero, &one, &first, &last);
+    if (s != DEDSEC_OK) return s;
+    total = zero + one;
+    minority = zero < one ? zero : one;
+    if (total >= 32 && zero >= 8 && one >= 8 && minority * 5 >= total)
+        return dedsec_emit_finding(emit, user, "unicode",
+                                   "implicit-bidi-source-order-collision",
+                                   "implicit-bidi-ltr-source-order-bits-msb",
+                                   first, last >= first ? last - first : 0,
+                                   55, total);
+    return DEDSEC_OK;
+}
+
 static dedsec_status unicode_detect(void *context, dedsec_view input,
                                     dedsec_finding_fn emit, void *user) {
     unicode_scan x = {0};
@@ -195,6 +332,8 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     if (s == DEDSEC_EUTF8) return DEDSEC_OK; /* encoding module owns this */
     if (s != DEDSEC_OK) return s;
     s = dedsec_utf8_foreach(input, scan_scalar, &x, &error);
+    if (s != DEDSEC_OK) return s;
+    s = detect_implicit_bidi(input, emit, user);
     if (s != DEDSEC_OK) return s;
     s = emit_count(&x, x.tags, x.first_tag, "unicode-tags", "tags-ascii", 85);
     if (s != DEDSEC_OK) return s;
@@ -347,6 +486,27 @@ static int decode_scalar(void *opaque, const dedsec_scalar *s) {
     return x->status != DEDSEC_OK;
 }
 
+static dedsec_status decode_implicit_bidi(dedsec_view input,
+                                          dedsec_bitstream *output) {
+    size_t start = 0;
+    while (start < input.len) {
+        size_t end = start;
+        uint8_t value;
+        while (end < input.len && input.ptr[end] != 0x0a) ++end;
+        if (end < input.len) {
+            size_t record_end = end + 1;
+            if (implicit_bidi_record(input, start, record_end, &value)) {
+                dedsec_status s = dedsec_bitstream_append_bits(output, value, 1, 0);
+                if (s != DEDSEC_OK) return s;
+            }
+            start = record_end;
+        } else {
+            break;
+        }
+    }
+    return output->bit_length ? DEDSEC_OK : DEDSEC_ENOTFOUND;
+}
+
 static dedsec_status strip_ignorables(dedsec_view input, dedsec_bitstream *output) {
     size_t i = 0, start;
     size_t error = 0;
@@ -362,7 +522,7 @@ static dedsec_status strip_ignorables(dedsec_view input, dedsec_bitstream *outpu
         else if (n == 2) cp = ((uint32_t)(b & 0x1f) << 6) | (input.ptr[i+1]&0x3f);
         else if (n == 3) cp = ((uint32_t)(b & 0x0f) << 12) | ((uint32_t)(input.ptr[i+1]&0x3f)<<6) | (input.ptr[i+2]&0x3f);
         else cp = ((uint32_t)(b & 7)<<18) | ((uint32_t)(input.ptr[i+1]&0x3f)<<12) | ((uint32_t)(input.ptr[i+2]&0x3f)<<6) | (input.ptr[i+3]&0x3f);
-        if (!known_ignorable(cp) && !in_range(cp, 0xfe00, 0xfe0f) && !in_range(cp, 0xe0100, 0xe01ef)) {
+        if (!dedsec_unicode_is_default_ignorable(cp)) {
             size_t j;
             dedsec_status s = DEDSEC_OK;
             for (j = 0; j < n; ++j) {
@@ -390,10 +550,18 @@ static dedsec_status unicode_decode(void *context, dedsec_view input,
         !dedsec_streq(request->variant, "variation-nibbles") &&
         !dedsec_streq(request->variant, "mongolian-fvs1-fvs2-bits-msb") &&
         !dedsec_streq(request->variant, "bidi-isolate-bits-msb") &&
+        !dedsec_streq(request->variant,
+                      "implicit-bidi-ltr-source-order-bits-msb") &&
         !dedsec_streq(request->variant, "iteration-mark-bits") &&
         !dedsec_streq(request->variant, "codepoint-map-msb") &&
         !dedsec_streq(request->variant, "codepoint-map-lsb"))
         return DEDSEC_EUNSUPPORTED;
+    if (dedsec_streq(request->variant,
+                     "implicit-bidi-ltr-source-order-bits-msb")) {
+        s = dedsec_utf8_foreach(input, validate_only, NULL, &error);
+        if (s != DEDSEC_OK) return s;
+        return decode_implicit_bidi(input, output);
+    }
     x.variant = request->variant; x.out = output; x.status = DEDSEC_OK;
     if (dedsec_streq(request->variant, "codepoint-map-msb") ||
         dedsec_streq(request->variant, "codepoint-map-lsb")) {

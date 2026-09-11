@@ -5,7 +5,7 @@ that every lane remains below its standalone recurrence threshold. Detection
 therefore exposes candidate symbols before aggregate promotion and permits a
 caller to reconstruct a bounded source-order hypothesis.
 
-## ABI-v3 callback contract
+## ABI-v4 callback contract
 
 Every callback value has a `kind`:
 
@@ -15,6 +15,8 @@ Every callback value has a `kind`:
   `symbol_value`, `symbol_width`, `byte_offset`, and `byte_length` identify the
   exact raw contribution. Its score is zero and it is not independently an
   alert.
+- `DEDSEC_DETECTION_OBSERVATION` is a zero-score raw property event. It has no
+  decoder hint, bit value, or symbol width and cannot be glued into bits.
 
 Built-in fixed identity, Unicode binary/nibble, line-ending, layout,
 ISO-2022/CESU-8, Markdown-marker, and validated radix lanes expose symbols.

@@ -8,6 +8,7 @@ set(LIBDEDSEC_SOURCES
     src/core.c
     src/composite.c
     src/bitstream_filter.c
+    src/bitstream_score.c
     src/utf8.c
     src/features.c
     src/unicode_properties.c

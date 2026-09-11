@@ -47,7 +47,9 @@ typedef struct dedsec_bitstream {
  * Ciphertext, compressed data, binary formats, and unknown encodings are
  * normally outside this filter's scope. It may pass sufficiently long,
  * non-degenerate opaque data for backend review without identifying or
- * decoding it. */
+ * decoding it. Globally balanced but locally constant or short-period source
+ * bits are not opaque evidence; their symbols remain available to callers for
+ * separately declared run-length or periodic-channel analysis. */
 typedef enum dedsec_plaintext_verdict {
     DEDSEC_PLAINTEXT_REJECT = 0,
     DEDSEC_PLAINTEXT_INSUFFICIENT = 1,
@@ -66,6 +68,7 @@ typedef enum dedsec_plaintext_verdict {
 #define DEDSEC_PLAINTEXT_BIT_INVERTED   0x00000200u
 #define DEDSEC_PLAINTEXT_OPAQUE_DATA    0x00000400u
 #define DEDSEC_PLAINTEXT_PARTIAL_BITS   0x00000800u
+#define DEDSEC_PLAINTEXT_STRUCTURED_DATA 0x00001000u
 
 #define DEDSEC_FILTER_MAX_TRANSFORMS 8u
 
@@ -94,6 +97,65 @@ typedef struct dedsec_bitstream_filter_result {
     dedsec_filter_transform transforms[DEDSEC_FILTER_MAX_TRANSFORMS];
     size_t equal_score_interpretations; /* includes selected interpretation */
 } dedsec_bitstream_filter_result;
+
+/* Model code lengths use Q48.16 bits. They are heuristic description lengths,
+ * not probabilities and not claims that a model generated the source. */
+#define DEDSEC_BITSTREAM_SCORE_SHORT_SAMPLE       0x00000001u
+#define DEDSEC_BITSTREAM_SCORE_LIMIT_REACHED      0x00000002u
+#define DEDSEC_BITSTREAM_SCORE_ARITHMETIC_CLAMPED 0x00000004u
+#define DEDSEC_BITSTREAM_SCORE_SIMPLE             0x00000100u
+#define DEDSEC_BITSTREAM_SCORE_HIGH_UNEXPLAINED   0x00000200u
+#define DEDSEC_BITSTREAM_SCORE_LINEAR_RECURRENCE  0x00000400u
+#define DEDSEC_BITSTREAM_SCORE_PERIODIC_STRUCTURE 0x00000800u
+#define DEDSEC_BITSTREAM_SCORE_DICTIONARY_STRUCTURE 0x00001000u
+
+typedef enum dedsec_bitstream_scorer_id {
+    DEDSEC_BITSTREAM_SCORER_NONE = 0,
+    DEDSEC_BITSTREAM_SCORER_RUNS = 1,
+    DEDSEC_BITSTREAM_SCORER_KT = 2,
+    DEDSEC_BITSTREAM_SCORER_PERIODIC = 3,
+    DEDSEC_BITSTREAM_SCORER_LZ78 = 4,
+    DEDSEC_BITSTREAM_SCORER_LINEAR = 5
+} dedsec_bitstream_scorer_id;
+
+typedef struct dedsec_bitstream_scorer_result {
+    dedsec_bitstream_scorer_id scorer;
+    size_t source_bits;
+    size_t assessed_bits;
+    uint64_t description_bits_q16;
+    uint32_t bits_per_source_bit_q16; /* normalized over assessed_bits */
+    size_t statistic;       /* transitions, contexts, phrases, or recurrence */
+    unsigned model_parameter; /* selected order/period; otherwise zero */
+    uint32_t flags;
+} dedsec_bitstream_scorer_result;
+
+/* Scorers used by dedsec_bitstream_score().  The linear-recurrence scorer is
+ * intentionally opt-in: it is comparatively expensive and identifies a
+ * narrow generator family without improving opaque-data triage. */
+#define DEDSEC_BITSTREAM_SCORER_COUNT 4u
+typedef struct dedsec_bitstream_score_result {
+    uint32_t score; /* 0..100 review heuristic; never a probability */
+    uint32_t flags;
+    size_t source_bits;
+    size_t scorer_count;
+    dedsec_bitstream_scorer_result scorers[DEDSEC_BITSTREAM_SCORER_COUNT];
+} dedsec_bitstream_score_result;
+
+dedsec_status dedsec_bitstream_scorer_runs(
+    const dedsec_bitstream *stream, dedsec_bitstream_scorer_result *result);
+dedsec_status dedsec_bitstream_scorer_kt(
+    const dedsec_bitstream *stream, unsigned maximum_order,
+    dedsec_bitstream_scorer_result *result);
+dedsec_status dedsec_bitstream_scorer_periodic(
+    const dedsec_bitstream *stream, unsigned maximum_period,
+    dedsec_bitstream_scorer_result *result);
+dedsec_status dedsec_bitstream_scorer_lz78(
+    const dedsec_bitstream *stream, size_t dictionary_limit,
+    dedsec_bitstream_scorer_result *result);
+dedsec_status dedsec_bitstream_scorer_linear(
+    const dedsec_bitstream *stream, dedsec_bitstream_scorer_result *result);
+dedsec_status dedsec_bitstream_score(
+    const dedsec_bitstream *stream, dedsec_bitstream_score_result *result);
 
 typedef enum dedsec_detection_kind {
     DEDSEC_DETECTION_FINDING = 0,

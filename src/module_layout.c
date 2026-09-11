@@ -9,6 +9,7 @@ typedef struct counts {
     void *user;
     const char *rule;
     const char *decoder;
+    dedsec_bitstream bits;
     dedsec_status status;
 } counts;
 static int count_pair(void *opaque, const dedsec_feature *f) {
@@ -18,6 +19,8 @@ static int count_pair(void *opaque, const dedsec_feature *f) {
     if (f->value == c->av) { ++c->a; value = 0; }
     else if (f->value == c->bv) { ++c->b; value = 1; }
     else return 0;
+    c->status = dedsec_bitstream_append_bits(&c->bits, value, 1, 0);
+    if (c->status != DEDSEC_OK) return 1;
     c->status = dedsec_emit_symbol(c->emit, c->user, "layout", c->rule,
                                    c->decoder, f->byte_offset, f->byte_length,
                                    value, 1);
@@ -92,8 +95,10 @@ static dedsec_status check_trailing_widths(dedsec_view input,
 static dedsec_status check_pair(dedsec_view input, dedsec_feature_kind kind,
                                 int64_t a, int64_t b, const char *rule,
                                 const char *decoder, dedsec_finding_fn emit,
-                                void *user, uint32_t score) {
+                                void *user, int allow_opaque) {
     counts c = {0};
+    dedsec_bitstream_filter_result filtered;
+    dedsec_status s;
     c.av = a;
     c.bv = b;
     c.emit = emit;
@@ -101,18 +106,18 @@ static dedsec_status check_pair(dedsec_view input, dedsec_feature_kind kind,
     c.rule = rule;
     c.decoder = decoder;
     c.status = DEDSEC_OK;
-    dedsec_status s = dedsec_extract_features(kind, input, count_pair, &c);
-    if (s == DEDSEC_ESTOP && c.status != DEDSEC_OK) return c.status;
-    if (s != DEDSEC_OK) return s;
-    /* Both values merely occurring is common natural formatting. A binary
-     * carrier normally needs enough examples of both choices to transport a
-     * non-trivial plaintext; reject heavily one-sided natural distributions.
-     * This is a conservative detector gate, not a proof of steganography. */
-    if (c.a >= 8 && c.b >= 8 && c.a + c.b >= 32 &&
-        (c.a < c.b ? c.a : c.b) * 5u >= c.a + c.b)
-        return dedsec_emit_finding(emit, user, "layout", rule, decoder, 0,
-                                   input.len, score, c.a + c.b);
-    return DEDSEC_OK;
+    dedsec_bitstream_init(&c.bits);
+    s = dedsec_extract_features(kind, input, count_pair, &c);
+    if (s == DEDSEC_ESTOP && c.status != DEDSEC_OK) s = c.status;
+    if (s == DEDSEC_OK) s = dedsec_bitstream_filter(&c.bits, &filtered);
+    if (s == DEDSEC_OK &&
+        (filtered.verdict == DEDSEC_PLAINTEXT_LIKELY ||
+         (filtered.flags & DEDSEC_PLAINTEXT_STRUCTURED_DATA) ||
+         (allow_opaque && (filtered.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA))))
+        s = dedsec_emit_finding(emit, user, "layout", rule, decoder, 0,
+                                input.len, filtered.score, c.bits.bit_length);
+    dedsec_bitstream_free(&c.bits);
+    return s;
 }
 
 static dedsec_status layout_detect(void *context, dedsec_view input,
@@ -121,17 +126,19 @@ static dedsec_status layout_detect(void *context, dedsec_view input,
     (void)context;
     s = check_trailing_widths(input, emit, user);
     if (s != DEDSEC_OK) return s;
+    /* Common choices remain raw symbols individually. Promote only when the
+     * complete extracted lane survives the shared plaintext/data filter. */
     s = check_pair(input, DEDSEC_FEATURE_GAP_WIDTH, 1, 2,
-                   "two-valued-word-gaps", "gap-width-bits", emit, user, 50);
+                   "two-valued-word-gaps", "gap-width-bits", emit, user, 1);
     if (s != DEDSEC_OK) return s;
     s = check_pair(input, DEDSEC_FEATURE_WORD_INITIAL_CASE, 0, 1,
-                   "binary-word-initial-case", "word-case-bits", emit, user, 30);
+                   "binary-word-initial-case", "word-case-bits", emit, user, 1);
     if (s != DEDSEC_OK) return s;
     s = check_pair(input, DEDSEC_FEATURE_PUNCTUATION_CLASS, 0, 1,
-                   "comma-semicolon-alphabet", "comma-semicolon-bits", emit, user, 25);
+                   "comma-semicolon-alphabet", "comma-semicolon-bits", emit, user, 0);
     if (s != DEDSEC_OK) return s;
     return check_pair(input, DEDSEC_FEATURE_PUNCTUATION_CLASS, 2, 3,
-                      "period-question-alphabet", "period-question-bits", emit, user, 20);
+                      "period-question-alphabet", "period-question-bits", emit, user, 1);
 }
 
 typedef struct feature_vec { dedsec_feature *p; size_t n, cap; int oom; } feature_vec;

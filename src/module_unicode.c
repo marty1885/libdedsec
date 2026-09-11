@@ -337,7 +337,7 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     if (s != DEDSEC_OK) return s;
     s = emit_count(&x, x.tags, x.first_tag, "unicode-tags", "tags-ascii", 85);
     if (s != DEDSEC_OK) return s;
-    if (x.zwsp && x.zwnj) {
+    if (x.zwsp && x.zwnj && x.zwsp + x.zwnj >= 8u) {
         uint64_t symbols = x.zwsp + x.zwnj;
         uint32_t score = 45u + (symbols > 10 ? 15u : (uint32_t)symbols);
         if (score > 100u) score = 100u;
@@ -362,8 +362,14 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
             if (s != DEDSEC_OK) return s;
         }
     }
-    s = emit_count(&x, x.bidi, x.first_bidi, "bidi-controls", NULL, 60);
-    if (s != DEDSEC_OK) return s;
+    /* A small paired directional run can be legitimate script typography,
+     * such as Hebrew embedded in an English historical text. Every scalar is
+     * still retained as a default-ignorable observation. Elevate only after
+     * recurrence; specialized binary-isolate analysis below remains stricter. */
+    if (x.bidi >= 4u) {
+        s = emit_count(&x, x.bidi, x.first_bidi, "bidi-controls", NULL, 60);
+        if (s != DEDSEC_OK) return s;
+    }
     {
         uint64_t openers = x.lri + x.rli;
         uint64_t minority = x.lri < x.rli ? x.lri : x.rli;
@@ -404,8 +410,10 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     s = emit_count(&x, x.iteration, x.first_iteration,
                    "ideographic-iteration-marks", "codepoint-map-msb", 10);
     if (s != DEDSEC_OK) return s;
-    return emit_count(&x, x.ignorables, x.first_ignorable,
-                      "default-ignorable-candidates", "strip-known-ignorables", 35);
+    if (x.ignorables >= 8u)
+        return emit_count(&x, x.ignorables, x.first_ignorable,
+                          "default-ignorable-candidates", "strip-known-ignorables", 35);
+    return DEDSEC_OK;
 }
 
 typedef struct decode_state {

@@ -26,7 +26,11 @@ typedef struct filter_source {
     unsigned bit_offset;
     unsigned tail_bits;
     unsigned tail_ones;
+    uint32_t signal_flags;
+    uint32_t signal_score;
 } filter_source;
+
+static unsigned stream_bit(const dedsec_bitstream *stream, size_t index);
 
 static int check_scalar(void *user, const dedsec_scalar *scalar) {
     scalar_check *check = (scalar_check *)user;
@@ -359,9 +363,22 @@ static dedsec_status assess_bytes(dedsec_view input, filter_path path,
      * turn qualifying data into REJECT. At depth zero, partial trailing bits
      * participate in bit balance even though they cannot form a byte. */
     if (candidate.score < 70u &&
+        (source->signal_flags & DEDSEC_BITSTREAM_SCORE_HIGH_UNEXPLAINED) &&
         looks_like_opaque_data(input, tail_ones, tail_bits)) {
         candidate.score = 70u;
         candidate.flags |= DEDSEC_PLAINTEXT_OPAQUE_DATA;
+        if (path.encoding_depth == 0 && source->tail_bits) {
+            candidate.source_bits_consumed += source->tail_bits;
+            candidate.ignored_trailing_bits = 0;
+            candidate.assessed_trailing_bits = source->tail_bits;
+        }
+    } else if (candidate.score < 70u &&
+               source->signal_score >= 70u &&
+               (source->signal_flags &
+                (DEDSEC_BITSTREAM_SCORE_PERIODIC_STRUCTURE |
+                 DEDSEC_BITSTREAM_SCORE_DICTIONARY_STRUCTURE))) {
+        candidate.score = source->signal_score;
+        candidate.flags |= DEDSEC_PLAINTEXT_STRUCTURED_DATA;
         if (path.encoding_depth == 0 && source->tail_bits) {
             candidate.source_bits_consumed += source->tail_bits;
             candidate.ignored_trailing_bits = 0;
@@ -493,6 +510,8 @@ static dedsec_status assess_variants(dedsec_view input, filter_path path,
 dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
                                       dedsec_bitstream_filter_result *result) {
     filter_best best = {0};
+    dedsec_bitstream_score_result stream_score;
+    dedsec_status score_status;
     size_t required;
     unsigned offset;
     int reverse, invert;
@@ -507,11 +526,15 @@ dedsec_status dedsec_bitstream_filter(const dedsec_bitstream *stream,
         uint8_t mask = (uint8_t)((1u << unused) - 1u);
         if (stream->bytes.ptr[required - 1u] & mask) return DEDSEC_EINVAL;
     }
+    score_status = dedsec_bitstream_score(stream, &stream_score);
+    if (score_status != DEDSEC_OK) return score_status;
     best.result.verdict = DEDSEC_PLAINTEXT_INSUFFICIENT;
     for (offset = 0; offset < 8 && offset < stream->bit_length; ++offset) {
         filter_source source;
         if ((stream->bit_length - offset) / 8 < FILTER_MIN_BYTES) continue;
         source.bit_length = stream->bit_length;
+        source.signal_flags = stream_score.flags;
+        source.signal_score = stream_score.score;
         source.bit_offset = offset;
         source.complete_bits = ((stream->bit_length - offset) / 8u) * 8u;
         source.tail_bits = (unsigned)((stream->bit_length - offset) % 8u);

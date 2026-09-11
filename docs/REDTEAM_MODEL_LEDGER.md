@@ -36,6 +36,9 @@ negative controls, and evidence gates are independently checked.
 | `luna-max-opaque-threshold-review-1` | GPT-5.6 Luna, max | Opaque threshold and recursive decoding audit | Reproduced depth-two opaque loss, phase penalty rejection, numeric-flag tie loss, tail loss, and unavoidable random-data volume. | Actionable defects accepted; random-data ambiguity documented. |
 | `luna-max-filter-api-review-1` | GPT-5.6 Luna, max | Filter API, source-bit accounting, and provenance audit | Reproduced ambiguous decoded length, missing bit-consumption metadata, hidden competing interpretations, and malformed packed storage acceptance. | API/result defects accepted; detection events remain the noncontiguous carrier provenance source. |
 | `blue-filter-paranoia-repair-1` | Codex controller implementation | Repair of three independent Luna max audits | ABI v5 adds source/tail/ordered-transform metadata and fixes depth, phase, ranking, post-radix, UTF-8-control, and storage-validation defects. | Implemented with exact positive, negative, malformed, and ambiguity regressions. |
+| `blue-case-serial-filter-1` | Codex controller implementation | False opaque promotion from natural case regimes | Globally balanced uppercase/lowercase blocks and period-two novelty case are low serial complexity despite shifted byte diversity. | Opaque promotion gated; symbols and provenance retained for explicit run-length/periodic analysis. |
+| `research-case-complexity-1` | Codex controller experiment | Compression and sequential-complexity separation for the high-noise word-initial-case lane | 5,500 natural, 2,200 encoded, and 44 styled streams tested at 16–512 bits; raw DEFLATE fails short, while KT/period models separate strongly from about 40–64 bits in this bounded corpus. | Promising research result only; require broader stratified baselines before library thresholds. |
+| `blue-bitstream-scorers-1` | Codex controller implementation | Public run, KT, periodic, LZ78, linear-complexity scorers and default-filter integration | Exact scorer, short/limit/malformed, opaque, periodic, and LFSR regressions pass; natural long controls remain simple. | Implemented as explainable triage; scores and structure flags are hypotheses, not probabilities or attribution. |
 
 ## Append an experiment
 
@@ -1562,3 +1565,149 @@ candidate is elevated.
   retained all 6,000 plaintext forms as `LIKELY`; 7,983 of 8,000 random/AES
   forms entered the deliberately noisy `POSSIBLE` queue and none were
   `LIKELY`.
+
+### `blue-default-sensitivity-repair-1`
+
+- Date / model / reasoning: 2026-09-11; Codex controller implementation.
+- Role: reproduce and reduce parameter-free false alerts from ordinary text
+  and source controls.
+- Controls examined: the repository GPL license, C implementation and test
+  files, README prose, plus executable C-like and Rust-like source snippets.
+- Reproduced result before repair: every ordinary space/case/punctuation/line
+  feature emitted a zero-score `SYMBOL` provenance record; GPL capitalization
+  emitted a score-30 aggregate; C punctuation emitted score 25; long ordinary
+  identifiers and words emitted score-15 Base32/Base64/Crockford findings;
+  source literals emitted score-25 JSON-escape findings.
+- Outcome: symbols remain available for caller-framed composite analysis but
+  case and punctuation no longer emit aggregate findings. Parameter-free
+  surface/radix and syntax spelling discovery is disabled; the direct surface
+  decoders remain available only under caller-supplied grammar. New C, Rust,
+  and GPL-like regression controls require zero `FINDING` events.
+- False-positive caveat: a consumer that displays every `SYMBOL` callback as
+  an alert still misrepresents raw provenance. `SYMBOL` and `OBSERVATION` are
+  not alerts; only aggregate `FINDING` records should enter an alert queue.
+
+### `blue-filtered-lane-repromotion-1`
+
+- Date / model / reasoning: 2026-09-11; Codex controller implementation.
+- Role: reconsider the high-volume case, gap-width, punctuation, and Markdown
+  marker lanes after installing the shared bitstream scorer/filter.
+- Implementation: each detector constructs its homogeneous source-order lane
+  while emitting the unchanged provenance-bearing symbols, calls
+  `dedsec_bitstream_filter()`, and emits one aggregate finding only for a
+  surviving lane. Exact 128-bit carriers independently reconstruct
+  `HIDDEN MESSAGE!!` through all five variants.
+- Negative controls: README and filter documentation, four implementation/test
+  files, and ten installed license texts produced no promoted findings in the
+  tested lanes. Existing compact C, Rust, license-like, and aligned-gap unit
+  controls also remain finding-free.
+- Partial null result: unrestricted opaque promotion failed for comma versus
+  semicolon. Ordinary C implementation files produced high-complexity balanced
+  lanes. That lane therefore promotes recognized plaintext or periodic/LZ78
+  structure automatically, but leaves unexplained opaque output as symbols for
+  a caller-supplied grammar or baseline. Case, gap width, period/question, and
+  Markdown marker lanes retain opaque-data promotion.
+- False-positive caveat: this is a small heterogeneous control set, not the
+  unavailable target corpus. Natural text can still resemble data, and a
+  comma/semicolon ciphertext channel can evade default aggregate promotion.
+
+### `blue-case-serial-filter-1`
+
+- Date / model / reasoning: 2026-09-11; Codex controller implementation.
+- Role: reduce opaque-data false promotion from high-noise case channels
+  without discarding their value-bearing symbols.
+- Exact controls: a 512-bit stream containing 256 one bits followed by 256
+  zero bits models an uppercase disclaimer followed by lowercase prose; a
+  separate 512-bit `01` stream models regular alternating novelty case.
+- Reproduced issue: global one-bit balance plus byte diversity at shifted
+  phases can make locally trivial case regimes appear opaque.
+- Outcome: the filter now recognizes clear constant/block-like regimes and
+  near-exact periods two through eight before opaque routing. Both controls
+  return `REJECT` without `OPAQUE_DATA`. Existing plaintext, ciphertext-like,
+  EBCDIC-like, non-byte-aligned five-bit, nested-radix, and shifted opaque
+  regressions continue to qualify as before.
+- False-positive caveat: this is deliberately a narrow serial-complexity gate,
+  not proof that a periodic or run-structured stream contains no information.
+  Detection symbols and byte provenance are unchanged, so callers may apply a
+  separately declared run-length or periodic-channel hypothesis.
+
+### `research-case-complexity-1`
+
+- Date / model / reasoning: 2026-09-11; Codex controller empirical study.
+- Role: test whether compressed-description-length approximations distinguish
+  naturally occurring word-initial case from plaintext and opaque payloads.
+- Inputs: 5,500 same-length natural streams sampled from four Gutenberg books,
+  project C/tests/license material, and a system license; 1,100 harmless
+  plaintext-encoded and 1,100 deterministic SHA-256-derived opaque-encoded
+  streams; 44 constant, alternating, noisy-alternating, and period-three style
+  controls. Lengths range from 16 through 512 bits.
+- Extraction validation: all 2,200 generated carriers were decoded separately
+  through libdedsec's `layout/word-case-bits` implementation; exact packed
+  bytes and bit lengths matched the independently generated manifest with no
+  failures.
+- Metrics tried: raw-DEFLATE compressed length, LZ78 phrase fraction, run and
+  transition statistics, KT prequential Markov code lengths of orders zero,
+  one, two, and four, and an explicit periods-one-through-eight residual code.
+- Follow-up challenge: added fixed-width RLE cost, one-change-point piecewise
+  KT, LZ78 estimated code length, and Berlekamp-Massey linear complexity, then
+  tested 1,650 deterministic Manchester, repetition-three, convolutional,
+  bit-stuffed, and degree-seven LFSR streams across the same lengths.
+- Outcome: DEFLATE framing overhead makes 16-64-bit results largely tied. A
+  minimum KT-order-one/short-period description-length score is much more
+  useful for short inputs. With a fixed 0.80 bits/source-bit research cutoff,
+  natural controls above threshold fell from 60/500 at 16 bits to 20/500 at
+  48, 10/500 at 64, 3/500 at 96, 1/500 at 128/192, and zero at 256/512; all
+  encoded classes passed from 24 bits except the deliberately repetitive
+  16-bit plaintext prefix. Styled controls were almost always explained by a
+  simpler model.
+- Calibration caveat: a split-sample empirical 99th-percentile threshold
+  eliminated most short false positives but also rejected the tested plaintext
+  class through 32 bits. At 40 bits and above it retained all tested encoded
+  streams, with zero through nine false positives among 250 held-out natural
+  controls depending on length. The baseline is heterogeneous and small, and
+  samples overlap source documents; this is not a production false-positive
+  estimate or evidence about the unavailable target corpus.
+- Scorer disposition: retain raw transition fraction rather than fixed-width
+  RLE code length; keep KT, bounded periodic, and LZ78 as complementary
+  description models; add linear complexity because it alone exposed the
+  balanced LFSR family. Piecewise KT did not materially improve the tested
+  two-regime case. Random-input convolutional and bit-stuffed streams remained
+  indistinguishable from opaque data without a declared inverse grammar.
+- Disposition: retain the experiment and generated carriers under
+  `.agent-workspaces/case-complexity-research/`. Do not install thresholds yet.
+  Next validation should stratify by document genre and use held-out sources,
+  especially chat/social-media capitalization and generated source code.
+
+### `blue-bitstream-scorers-1`
+
+- Date / model / reasoning: 2026-09-11; Codex controller implementation.
+- Role: expose the validated research measurements through pure-C11 APIs and
+  replace the filter's narrow serial-complexity gate with the scorer ensemble.
+- Implementation: added transition-mask KT, selectable-order KT, bounded
+  periodic residual, bounded LZ78, and bounded Berlekamp-Massey scorers. Every
+  scorer returns source/assessed lengths, Q48.16 description length and ratio,
+  raw statistic, selected model parameter, and explicit short/limit/arithmetic
+  flags. `dedsec_bitstream_score()` returns the four general-purpose scorers
+  plus explainable aggregate flags. Berlekamp-Massey remains an explicit
+  forensic scorer because its quadratic, generator-specific classification is
+  unnecessary for opaque-data triage.
+- Filter disposition: high unexplained streams may route as `OPAQUE_DATA`;
+  periodic or dictionary structure routes as
+  `STRUCTURED_DATA`; simple streams remain rejected as literal data without
+  deleting their carrier symbols. Plaintext/radix scoring remains independent.
+- Exact regressions: alternating and constant regimes remain simple; a
+  deterministic opaque stream remains high-unexplained; bounded LZ78 reports
+  saturation; invalid options and malformed packed storage fail; a degree-seven
+  LFSR remains review-worthy as opaque data by default and is independently
+  exposed by the opt-in linear scorer; a 2,048-bit input verifies the
+  1,024-bit linear work cap.
+- Empirical check: all 2,200 generated case carriers still decode exactly. All
+  opaque carriers at 48-512 bits score high-unexplained; tested plaintext case
+  carriers do so from 40 bits. Four complete Gutenberg books, the GPL, source,
+  tests, and a system license score simple under the word-case lane. The
+  existing four-book all-lane result remains 24 reject, 44 insufficient, 28
+  possible, and zero likely.
+- Caveat: thresholds derive from a bounded heterogeneous corpus, not the
+  unavailable target corpus. Short streams, distribution matching, and random
+  data remain ambiguous. A low description length can itself identify a
+  possible carrier grammar and must never be reported as absence of data.

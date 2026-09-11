@@ -40,12 +40,13 @@ only record whether each transform occurred anywhere. A printable radix
 wrapper cannot qualify as plaintext by itself when its decoded content is
 binary noise.
 
-All trial phases remain eligible for opaque routing. Phase, reversal, and
-inversion penalties may rank plaintext hypotheses but cannot lower a stream
-that independently satisfies the opaque gate below `POSSIBLE`. Equal-score
-interpretations are counted, and selection prefers smaller source offsets,
-more consumed source bits, fewer bit operations, and then deeper canonical
-radix evidence. Numeric flag values are never used as evidentiary ranking.
+All trial phases remain eligible for opaque routing unless the source bits are
+clearly low in serial complexity. Phase, reversal, and inversion penalties may
+rank plaintext hypotheses but cannot lower a stream that independently
+satisfies the opaque gate below `POSSIBLE`. Equal-score interpretations are
+counted, and selection prefers smaller source offsets, more consumed source
+bits, fewer bit operations, and then deeper canonical radix evidence. Numeric
+flag values are never used as evidentiary ranking.
 
 The `score` is a heuristic from 0 through 100, never a probability:
 
@@ -64,7 +65,18 @@ for backend review. Those classes are information-theoretically confusable
 with random noise from the bytes alone; the flag makes no attribution and must
 be combined with carrier structure, recurrence, framing/checks, provenance,
 or external operator knowledge. Constant and low-diversity streams remain
-filtered. This same opaque path covers EBCDIC bytes lifted into Unicode when
+filtered. The default decision now uses the public run, KT, periodic, and
+bounded LZ78 scorer ensemble. Clearly block-like or
+simple short-period source bits remain filtered: for example,
+an uppercase disclaimer followed by lowercase prose can be globally balanced
+while consisting only of a long one-run and a long zero-run, and novelty case
+can form an almost exact period-two stream. These source symbols remain
+available with provenance for a separately declared run-length or periodic
+decoder; they merely do not qualify as opaque data by literal bit packing.
+Structure exposed primarily by periodic or dictionary
+models can instead pass as `DEDSEC_PLAINTEXT_STRUCTURED_DATA`; that flag names
+observed structure, not its format or purpose.
+This same opaque path covers EBCDIC bytes lifted into Unicode when
 their resulting UTF-8 byte stream meets the generic length, diversity, and bit
 balance gates; no byte-lift-specific flag or code-page guess exists.
 

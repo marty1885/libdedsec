@@ -44,7 +44,7 @@ bounded round trip, and framing/recurrence evidence as appropriate.
 |---|---|---|
 | Bidi isolates/openers | Duplicate | Different isolate opener spellings are the existing bidi-control family unless a genuinely different state/grammar property is shown. |
 | Tags, variation selectors, zero-width controls, noncharacters, CESU-8, Japanese iteration marks, script confusables | Duplicate or existing built-in trial family | Check code and tests before claiming a gap. A new carrier spelling is not a new primitive. |
-| Ordinary case, whitespace, punctuation, structural parity, lexical synonym choices | Existing generic/built-in family | They need a feature-level distinction and evidence gate; do not resubmit a renamed token alphabet. |
+| Ordinary case, whitespace, punctuation, structural parity, lexical synonym choices | Existing generic/built-in family | They need a feature-level distinction and evidence gate; do not resubmit a renamed token alphabet. Built-in case, gap, punctuation, and Markdown-marker lanes retain raw `SYMBOL` provenance and use whole-lane bitstream filtering before aggregate promotion. Comma/semicolon opaque output still requires caller context because source code is a demonstrated false-positive class. |
 
 Grammar-dependent markup, line-break representation, and combining-mark order
 are candidates rather than rejections. See `docs/CANDIDATE_STEGNO.md` for

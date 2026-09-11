@@ -14,15 +14,6 @@ static int count_finding(void *u, const dedsec_finding *f) {
 static int count_match(void *u, const dedsec_match *m) {
     size_t *n = (size_t *)u; CHECK(m->source_offset == 0); ++*n; return 0;
 }
-typedef struct finding_capture { size_t count, offset, length; } finding_capture;
-static int capture_base64(void *u, const dedsec_finding *f) {
-    finding_capture *capture = (finding_capture *)u;
-    if (f->kind == DEDSEC_DETECTION_FINDING &&
-        strcmp(f->rule_id, "base64-rfc4648-token") == 0) {
-        ++capture->count; capture->offset = f->byte_offset; capture->length = f->byte_length;
-    }
-    return 0;
-}
 static int capture_zwsp_zwnj(void *u, const dedsec_finding *f) {
     size_t *count = (size_t *)u;
     if (f->kind == DEDSEC_DETECTION_FINDING && f->decoder_hint &&
@@ -294,6 +285,43 @@ static void decode_bits_expect(dedsec_registry *r, const char *module,
     CHECK(out.bytes.len == expected_bytes);
     CHECK(memcmp(out.bytes.ptr, expected, expected_bytes) == 0);
     dedsec_bitstream_free(&out);
+}
+static void promoted_lane_expect(dedsec_registry *registry, const char *variant,
+                                 unsigned carrier_kind) {
+    static const uint8_t expected[] = "HIDDEN MESSAGE!!";
+    dedsec_buffer carrier;
+    variant_capture capture = {
+        carrier_kind == 3u ? "markdown" : "layout", variant, 0
+    };
+    size_t i, bit;
+    dedsec_buffer_init(&carrier);
+    if (carrier_kind == 1u)
+        CHECK(dedsec_buffer_append(&carrier, "x", 1) == DEDSEC_OK);
+    for (i = 0; i < sizeof(expected) - 1u; ++i) {
+        for (bit = 0; bit < 8u; ++bit) {
+            int one = (expected[i] >> (7u - bit)) & 1u;
+            if (carrier_kind == 0u) {
+                CHECK(dedsec_buffer_append(&carrier, one ? "X " : "x ", 2) == DEDSEC_OK);
+            } else if (carrier_kind == 1u) {
+                CHECK(dedsec_buffer_append(&carrier, one ? "  x" : " x",
+                                           one ? 3 : 2) == DEDSEC_OK);
+            } else if (carrier_kind == 2u) {
+                const char symbol = one ?
+                    (strcmp(variant, "comma-semicolon-bits") == 0 ? ';' : '?') :
+                    (strcmp(variant, "comma-semicolon-bits") == 0 ? ',' : '.');
+                CHECK(dedsec_buffer_append(&carrier, &symbol, 1) == DEDSEC_OK);
+            } else {
+                CHECK(dedsec_buffer_append(&carrier, one ? "* x\n" : "- x\n", 4) == DEDSEC_OK);
+            }
+        }
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 1u);
+    decode_bits_expect(registry, capture.module, variant, carrier.ptr,
+                       carrier.len, NULL, 0, (sizeof(expected) - 1u) * 8u,
+                       expected, sizeof(expected) - 1u);
+    dedsec_buffer_free(&carrier);
 }
 static void append_identity_carrier(dedsec_buffer *carrier, dedsec_view zero,
                                     dedsec_view one, int alternating) {
@@ -984,6 +1012,30 @@ int main(void) {
     static const char hay[] = "Se cret";
     static const char needle[] = "secret";
     static const char normal[] = "ordinary prose has one question? nothing unusual follows.\n";
+    static const char source_like_c[] =
+        "static int add(int left, int right) { return left + right; }\n"
+        "int main(void) { int value = add(2, 3); return value == 5 ? 0 : 1; }\n";
+    static const char source_like_rust[] =
+        "fn add(left: i32, right: i32) -> i32 { left + right }\n"
+        "fn main() { let value = add(2, 3); assert_eq!(value, 5); }\n";
+    static const char license_like[] =
+        "GNU GENERAL PUBLIC LICENSE\n\n"
+        "Everyone is permitted to copy and distribute verbatim copies of this license document.\n";
+    static const char aligned_gaps[] =
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n"
+        "alpha beta\nalpha  beta\nalpha beta\nalpha  beta\n";
+    static const uint8_t paired_hebrew_direction[] = {
+        0xe2,0x80,0x8f, 0xd7,0x97,0xd7,0x95, 0xe2,0x80,0x8e
+    };
+    static const uint8_t short_zwsp_code_literal[] = {
+        0xe2,0x80,0x8b, 0xe2,0x80,0x8c, 0xe2,0x80,0x8b, 0xe2,0x80,0x8c
+    };
     static const char hidden[] = "Meet at the loading dock at midnight.";
     static const char hidden_hex[] =
         "4d65657420617420746865206c6f6164696e6720646f636b206174206d69646e696768742e";
@@ -1054,6 +1106,11 @@ int main(void) {
 
     dedsec_registry_init(&registry);
     CHECK(dedsec_registry_add_builtins(&registry) == DEDSEC_OK);
+    promoted_lane_expect(&registry, "word-case-bits", 0u);
+    promoted_lane_expect(&registry, "gap-width-bits", 1u);
+    promoted_lane_expect(&registry, "comma-semicolon-bits", 2u);
+    promoted_lane_expect(&registry, "period-question-bits", 2u);
+    promoted_lane_expect(&registry, "markdown-ul-marker-bits", 3u);
     {
         static const uint8_t space_zero[] = {0x20};
         static const uint8_t space_one[] = {0xc2, 0xa0};
@@ -1160,6 +1217,12 @@ int main(void) {
     decode_expect(&registry, "markdown", "markdown-ul-marker-bits",
                   (const uint8_t *)markdown_list, sizeof(markdown_list)-1, "O");
     {
+        size_t markdown_findings = 0;
+        CHECK(dedsec_detect_all(&registry, view(markdown_list, sizeof(markdown_list)-1),
+                                count_finding, &markdown_findings) == DEDSEC_OK);
+        CHECK(markdown_findings == 0);
+    }
+    {
         static const uint8_t expected[] = {0x22};
         static const dedsec_binary_rule lane_rule = {DEDSEC_BINARY_LOW_BIT, 0, 0, 2, 0, 0};
         decode_bits_expect(&registry, "markdown", "markdown-ul-level-rule",
@@ -1196,7 +1259,7 @@ int main(void) {
                            &parity_rule, sizeof(parity_rule), 2, expected, sizeof(expected));
     }
     CHECK(dedsec_detect_all(&registry, view(tags, sizeof(tags)), count_finding, &findings) == DEDSEC_OK);
-    CHECK(findings >= 2);
+    CHECK(findings >= 1);
     findings = 0;
     CHECK(dedsec_detect_all(&registry, view(zw, sizeof(zw)), capture_zwsp_zwnj, &findings) == DEDSEC_OK);
     CHECK(findings == 1);
@@ -1206,27 +1269,22 @@ int main(void) {
     findings = 0;
     CHECK(dedsec_detect_all(&registry, view(json_carrier, sizeof(json_carrier)),
                             count_finding, &findings) == DEDSEC_OK);
-    CHECK(findings >= 1);
+    CHECK(findings == 0);
     findings = 0;
     CHECK(dedsec_detect_all(&registry, view(line_forms, sizeof(line_forms)-1),
                             count_finding, &findings) == DEDSEC_OK);
     CHECK(findings >= 1);
     {
-        finding_capture capture = {0};
-        dedsec_view token;
+        size_t surface_findings = 0;
         CHECK(dedsec_detect_all(&registry, view(markdown_b64, sizeof(markdown_b64)-1),
-                                capture_base64, &capture) == DEDSEC_OK);
-        CHECK(capture.count == 1);
-        CHECK(capture.length == sizeof(b64_long)-1);
-        CHECK(capture.offset == (size_t)(strstr(markdown_b64, b64_long) - markdown_b64));
-        token.ptr = (const uint8_t *)markdown_b64 + capture.offset;
-        token.len = capture.length;
-        decode_expect(&registry, "surface", "base64-rfc4648", token.ptr, token.len,
+                                count_finding, &surface_findings) == DEDSEC_OK);
+        CHECK(surface_findings == 0);
+        decode_expect(&registry, "surface", "base64-rfc4648",
+                      (const uint8_t *)b64_long, sizeof(b64_long)-1,
                       "OKOKOKOKOKOK");
-        capture.count = 0;
         CHECK(dedsec_detect_all(&registry, view(html_b64, sizeof(html_b64)-1),
-                                capture_base64, &capture) == DEDSEC_OK);
-        CHECK(capture.count == 1);
+                                count_finding, &surface_findings) == DEDSEC_OK);
+        CHECK(surface_findings == 0);
     }
     CHECK(dedsec_search(view(hay, sizeof(hay)-1), &nv, 1, &chain, 1,
                         count_match, &matches) == DEDSEC_OK);
@@ -1248,6 +1306,32 @@ int main(void) {
     }
     findings = 0;
     CHECK(dedsec_detect_all(&registry, view(normal, sizeof(normal)-1),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry, view(source_like_c, sizeof(source_like_c)-1),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry, view(source_like_rust, sizeof(source_like_rust)-1),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry, view(license_like, sizeof(license_like)-1),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry, view(aligned_gaps, sizeof(aligned_gaps)-1),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry,
+                            view(paired_hebrew_direction, sizeof(paired_hebrew_direction)),
+                            count_finding, &findings) == DEDSEC_OK);
+    CHECK(findings == 0);
+    findings = 0;
+    CHECK(dedsec_detect_all(&registry,
+                            view(short_zwsp_code_literal, sizeof(short_zwsp_code_literal)),
                             count_finding, &findings) == DEDSEC_OK);
     CHECK(findings == 0);
     filter_bytes_expect((const uint8_t *)hidden, sizeof(hidden)-1,
@@ -1359,9 +1443,10 @@ int main(void) {
         CHECK(stream.bit_length == 129u);
         CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
         CHECK(result.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
-        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
-        CHECK(result.bit_offset == 1u);
-        CHECK(result.source_bits_consumed == 128u);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_STRUCTURED_DATA) != 0);
+        CHECK(result.bit_offset == 0u);
+        CHECK(result.source_bits_consumed == 129u);
+        CHECK(result.assessed_trailing_bits == 1u);
         CHECK(result.ignored_trailing_bits == 0u);
         dedsec_bitstream_free(&stream);
     }
@@ -1460,6 +1545,119 @@ int main(void) {
         dedsec_bitstream_free(&stream);
     }
     {
+        dedsec_bitstream stream;
+        dedsec_bitstream_score_result score;
+        dedsec_bitstream_scorer_result lz_simple, lz_opaque, limited;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < 256u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, i & 1u, 1, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_score(&stream, &score) == DEDSEC_OK);
+        CHECK(score.scorer_count == DEDSEC_BITSTREAM_SCORER_COUNT);
+        CHECK((score.flags & DEDSEC_BITSTREAM_SCORE_SIMPLE) != 0);
+        CHECK(score.scorers[0].scorer == DEDSEC_BITSTREAM_SCORER_RUNS);
+        CHECK(score.scorers[1].scorer == DEDSEC_BITSTREAM_SCORER_KT);
+        CHECK(score.scorers[2].scorer == DEDSEC_BITSTREAM_SCORER_PERIODIC);
+        CHECK(score.scorers[3].scorer == DEDSEC_BITSTREAM_SCORER_LZ78);
+        CHECK(dedsec_bitstream_scorer_lz78(&stream, 256u, &lz_simple) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_scorer_lz78(&stream, 4u, &limited) == DEDSEC_OK);
+        CHECK((limited.flags & DEDSEC_BITSTREAM_SCORE_LIMIT_REACHED) != 0);
+        dedsec_bitstream_free(&stream);
+
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < sizeof(ciphertext_like); ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, ciphertext_like[i], 8, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_score(&stream, &score) == DEDSEC_OK);
+        CHECK((score.flags & DEDSEC_BITSTREAM_SCORE_HIGH_UNEXPLAINED) != 0);
+        CHECK(dedsec_bitstream_scorer_lz78(&stream, 256u, &lz_opaque) == DEDSEC_OK);
+        CHECK(lz_simple.bits_per_source_bit_q16 < lz_opaque.bits_per_source_bit_q16);
+        CHECK(dedsec_bitstream_scorer_kt(&stream, 5u, &limited) == DEDSEC_EINVAL);
+        CHECK(dedsec_bitstream_scorer_periodic(&stream, 65u, &limited) == DEDSEC_EINVAL);
+        CHECK(dedsec_bitstream_scorer_lz78(&stream, 0, &limited) == DEDSEC_EINVAL);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_score_result score;
+        dedsec_bitstream_filter_result filter;
+        unsigned state = 37u;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < 256u; ++i) {
+            unsigned bit = state & 1u;
+            unsigned feedback = ((state >> 0) ^ (state >> 1)) & 1u;
+            CHECK(dedsec_bitstream_append_bits(&stream, (uint8_t)bit, 1, 0) == DEDSEC_OK);
+            state = (state >> 1) | (feedback << 6);
+        }
+        CHECK(dedsec_bitstream_score(&stream, &score) == DEDSEC_OK);
+        CHECK((score.flags & DEDSEC_BITSTREAM_SCORE_HIGH_UNEXPLAINED) != 0);
+        {
+            dedsec_bitstream_scorer_result linear;
+            CHECK(dedsec_bitstream_scorer_linear(&stream, &linear) == DEDSEC_OK);
+            CHECK(linear.statistic <= 7u);
+        }
+        CHECK(dedsec_bitstream_filter(&stream, &filter) == DEDSEC_OK);
+        CHECK(filter.verdict == DEDSEC_PLAINTEXT_POSSIBLE);
+        CHECK((filter.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) != 0);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_scorer_result linear;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < 2048u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, 0u, 1, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_scorer_linear(&stream, &linear) == DEDSEC_OK);
+        CHECK(linear.source_bits == 2048u);
+        CHECK(linear.assessed_bits == 1024u);
+        CHECK((linear.flags & DEDSEC_BITSTREAM_SCORE_LIMIT_REACHED) != 0);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_score_result score;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        for (i = 0; i < 16u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream,
+                                               (uint8_t)(i * 13u), 1, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_score(&stream, &score) == DEDSEC_OK);
+        CHECK((score.flags & DEDSEC_BITSTREAM_SCORE_SHORT_SAMPLE) != 0);
+        CHECK(score.score == 0u);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        /* An uppercase disclaimer followed by lowercase prose is globally
+         * balanced but locally consists of two trivial case regimes. */
+        for (i = 0; i < 256u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, 1u, 1, 0) == DEDSEC_OK);
+        for (i = 0; i < 256u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, 0u, 1, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_REJECT);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) == 0);
+        dedsec_bitstream_free(&stream);
+    }
+    {
+        dedsec_bitstream stream;
+        dedsec_bitstream_filter_result result;
+        size_t i;
+        dedsec_bitstream_init(&stream);
+        /* Alternating novelty case is meaningful typography, but its literal
+         * period-two bitstream is not evidence of opaque extracted data. */
+        for (i = 0; i < 512u; ++i)
+            CHECK(dedsec_bitstream_append_bits(&stream, i & 1u, 1, 0) == DEDSEC_OK);
+        CHECK(dedsec_bitstream_filter(&stream, &result) == DEDSEC_OK);
+        CHECK(result.verdict == DEDSEC_PLAINTEXT_REJECT);
+        CHECK((result.flags & DEDSEC_PLAINTEXT_OPAQUE_DATA) == 0);
+        dedsec_bitstream_free(&stream);
+    }
+    {
         dedsec_bitstream empty, malformed;
         dedsec_bitstream_filter_result result;
         dedsec_bitstream_init(&empty);
@@ -1481,6 +1679,10 @@ int main(void) {
                                                (uint8_t)i, 8, 0) == DEDSEC_OK);
         malformed_length.bit_length -= 8u;
         CHECK(dedsec_bitstream_filter(&malformed_length, &result) == DEDSEC_EINVAL);
+        {
+            dedsec_bitstream_score_result score;
+            CHECK(dedsec_bitstream_score(&malformed_length, &score) == DEDSEC_EINVAL);
+        }
         dedsec_bitstream_init(&malformed_padding);
         CHECK(dedsec_bitstream_append_bits(&malformed_padding, 0x15, 5, 0) == DEDSEC_OK);
         malformed_padding.bytes.ptr[0] |= 1u;

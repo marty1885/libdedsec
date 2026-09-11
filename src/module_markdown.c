@@ -39,6 +39,7 @@ static dedsec_status foreach_ul(dedsec_view input, ul_entry_fn emit, void *user)
 
 typedef struct count_state {
     uint64_t dash, star, total;
+    dedsec_bitstream bits;
     dedsec_finding_fn emit;
     void *user;
     dedsec_status status;
@@ -47,6 +48,9 @@ static int count_ul(void *opaque, size_t offset, uint8_t marker, unsigned indent
     count_state *x = (count_state *)opaque;
     (void)indent;
     ++x->total; if (marker == '-') ++x->dash; else ++x->star;
+    x->status = dedsec_bitstream_append_bits(&x->bits,
+                                             marker == '*', 1, 0);
+    if (x->status != DEDSEC_OK) return 1;
     x->status = dedsec_emit_symbol(x->emit, x->user, "markdown",
                                    "mixed-unordered-list-markers",
                                    "markdown-ul-marker-bits", offset, 1,
@@ -56,18 +60,23 @@ static int count_ul(void *opaque, size_t offset, uint8_t marker, unsigned indent
 static dedsec_status markdown_detect(void *context, dedsec_view input,
                                      dedsec_finding_fn emit, void *user) {
     count_state x = {0};
+    dedsec_bitstream_filter_result filtered;
     dedsec_status s;
     (void)context;
     x.emit = emit;
     x.user = user;
     x.status = DEDSEC_OK;
+    dedsec_bitstream_init(&x.bits);
     s = foreach_ul(input, count_ul, &x);
-    if (s == DEDSEC_ESTOP && x.status != DEDSEC_OK) return x.status;
-    if (s != DEDSEC_OK) return s;
-    if (x.dash >= 2 && x.star >= 2 && x.total >= 8)
-        return dedsec_emit_finding(emit, user, "markdown", "mixed-unordered-list-markers",
-                                   "markdown-ul-marker-bits", 0, input.len, 45, x.total);
-    return DEDSEC_OK;
+    if (s == DEDSEC_ESTOP && x.status != DEDSEC_OK) s = x.status;
+    if (s == DEDSEC_OK) s = dedsec_bitstream_filter(&x.bits, &filtered);
+    if (s == DEDSEC_OK && filtered.verdict >= DEDSEC_PLAINTEXT_POSSIBLE)
+        s = dedsec_emit_finding(emit, user, "markdown",
+                                "mixed-unordered-list-markers",
+                                "markdown-ul-marker-bits", 0, input.len,
+                                filtered.score, x.bits.bit_length);
+    dedsec_bitstream_free(&x.bits);
+    return s;
 }
 
 typedef struct decode_state {

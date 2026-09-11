@@ -8,7 +8,7 @@ The name is taken from the Watch Dogs series. it reflects the urgency of getting
 
 ## Features
 
-- Strict UTF-8 decoding with source-byte offsets; detection for malformed UTF-8, embedded NULs, BOMs, ISO-2022 designations, Unicode-17.0.0-pinned default-ignorable and bidi code points (including raw value/context observations), residual non-default-ignorable format controls, C1 control and non-ASCII whitespace property observations, standardized variation selectors (including a bounded Mongolian FVS lane), tags, noncharacters, iteration marks, and surface forms such as JSON escapes, URI percent escapes, RFC 2047, C trigraphs, and ANSI controls.
+- Strict UTF-8 decoding with source-byte offsets; detection for malformed UTF-8, embedded NULs, BOMs, ISO-2022 designations, Unicode-17.0.0-pinned default-ignorable and bidi code points (including raw value/context observations), residual non-default-ignorable format controls, C1 control and non-ASCII whitespace property observations, standardized variation selectors (including a bounded Mongolian FVS lane), tags, noncharacters, and iteration marks. Surface spelling decoders are caller-selected because valid container grammar is required before their representations are evidence.
 - Trial decoders for tag bytes, zero-width binary, variation-selector nibbles, bounded Mongolian FVS1/FVS2 bits, structurally gated bidi-isolate binary, bounded implicit-bidi LTR source-order records, ISO-2022 designations, generic trailing-EOL horizontal-whitespace widths, case, punctuation, parity, CESU-8 forms, Japanese iteration marks, fixed reviewed Unicode identity pairs (including canonical combining order), LF/CRLF/LINE-SEPARATOR representation lanes, Base64/Base32, Markdown unordered lists, Gemtext link separator representations, and conservative structural signals.
 - Extensible modules, feature extraction and bit conversion, caller-defined code-point or token alphabets, bit-exact output with partial-byte retention, and transform-chain substring search with source-offset provenance.
 - ABI-v5 retains the v4 detection callback kinds, which distinguish aggregate findings, non-bit raw
@@ -60,6 +60,19 @@ non-overlapping caller-selected subset to
 `dedsec_symbols_glue_source_order()`. See the
 [composite-channel contract](docs/COMPOSITE_CHANNELS.md).
 
+Case, ordinary one/two-space gaps, punctuation, and mixed Markdown bullets
+remain raw symbols individually. Their complete per-feature lanes are now
+promoted only when the shared bitstream filter finds plausible plaintext,
+opaque data, or modeled structure. Comma/semicolon lanes require plaintext or
+modeled structure by default because ordinary source code repeatedly produced
+opaque-looking false positives. Raw radix/surface-spelling coincidences remain
+excluded because scoring cannot supply their missing container grammar. Short
+default-ignorable and bidi runs remain raw observations;
+they need recurrence, a field grammar, baseline, framing, or another
+independent reason before elevation. Ordinary source code, licenses, and prose
+produce these features naturally. Their direct decoders remain available only
+after the caller supplies that additional evidence.
+
 ## Bit-exact decoding
 
 `dedsec_decode()` returns only whole bytes. For forensic work use `dedsec_decode_bits()` and `dedsec_bitstream`; `bit_length` preserves a final partial byte, whose unused low bits are zero in storage. New modules should implement `decode_bits`; legacy `decode` modules are represented as whole-byte streams.
@@ -83,11 +96,17 @@ format, so carrier-side evidence remains essential. Promote
 `DEDSEC_PLAINTEXT_LIKELY` for the conservative production path; reserve
 `DEDSEC_PLAINTEXT_POSSIBLE` for secondary analysis. Non-byte-aligned sources
 retain exact consumed/ignored bit counts, and ordered transform provenance
-distinguishes operations applied before and after radix decoding.
+distinguishes operations applied before and after radix decoding. Globally
+balanced source bits that are locally block-like or nearly short-period do not
+qualify as opaque merely because a shifted byte phase looks diverse. Their raw
+symbols remain available for explicit run-length or periodic analysis.
 
 This is explicitly not a ciphertext detector. A rejected result means "not
 plausible supported plaintext," not "no hidden payload." See the
 [plaintext filter contract and measurements](docs/PLAINTEXT_FILTER.md).
+The underlying [bitstream scorer API](docs/BITSTREAM_SCORERS.md) exposes run,
+KT, periodic, and bounded LZ78 measurements so a
+caller can replace or explain the convenience heuristic.
 
 ## Search
 

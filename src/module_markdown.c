@@ -37,19 +37,32 @@ static dedsec_status foreach_ul(dedsec_view input, ul_entry_fn emit, void *user)
     return DEDSEC_OK;
 }
 
-typedef struct count_state { uint64_t dash, star, total; } count_state;
+typedef struct count_state {
+    uint64_t dash, star, total;
+    dedsec_finding_fn emit;
+    void *user;
+    dedsec_status status;
+} count_state;
 static int count_ul(void *opaque, size_t offset, uint8_t marker, unsigned indent) {
     count_state *x = (count_state *)opaque;
-    (void)offset; (void)indent;
+    (void)indent;
     ++x->total; if (marker == '-') ++x->dash; else ++x->star;
-    return 0;
+    x->status = dedsec_emit_symbol(x->emit, x->user, "markdown",
+                                   "mixed-unordered-list-markers",
+                                   "markdown-ul-marker-bits", offset, 1,
+                                   marker == '*', 1);
+    return x->status != DEDSEC_OK;
 }
 static dedsec_status markdown_detect(void *context, dedsec_view input,
                                      dedsec_finding_fn emit, void *user) {
     count_state x = {0};
     dedsec_status s;
     (void)context;
+    x.emit = emit;
+    x.user = user;
+    x.status = DEDSEC_OK;
     s = foreach_ul(input, count_ul, &x);
+    if (s == DEDSEC_ESTOP && x.status != DEDSEC_OK) return x.status;
     if (s != DEDSEC_OK) return s;
     if (x.dash >= 2 && x.star >= 2 && x.total >= 8)
         return dedsec_emit_finding(emit, user, "markdown", "mixed-unordered-list-markers",

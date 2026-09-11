@@ -18,20 +18,112 @@ static int sentence_end(uint32_t cp) {
 }
 static int hspace_cp(uint32_t cp) { return cp == ' ' || cp == '\t' || cp == '\r'; }
 
+typedef enum line_ending {
+    LINE_END_NONE,
+    LINE_END_LF,
+    LINE_END_CRLF,
+    LINE_END_SEPARATOR
+} line_ending;
+
+static int validate_scalar(void *opaque, const dedsec_scalar *s) {
+    (void)opaque;
+    (void)s;
+    return 0;
+}
+
+/* This is intentionally byte-oriented after strict UTF-8 validation: CRLF is
+ * one complete slot, while U+2028 has a fixed three-byte UTF-8 spelling. */
+static line_ending line_ending_at(dedsec_view input, size_t offset,
+                                  size_t *length) {
+    if (offset >= input.len) return LINE_END_NONE;
+    if (input.ptr[offset] == '\r' && offset + 1 < input.len &&
+        input.ptr[offset + 1] == '\n') {
+        *length = 2;
+        return LINE_END_CRLF;
+    }
+    if (input.ptr[offset] == '\n') {
+        *length = 1;
+        return LINE_END_LF;
+    }
+    if (offset + 3 <= input.len && input.ptr[offset] == 0xe2 &&
+        input.ptr[offset + 1] == 0x80 && input.ptr[offset + 2] == 0xa8) {
+        *length = 3;
+        return LINE_END_SEPARATOR;
+    }
+    return LINE_END_NONE;
+}
+
+static dedsec_status emit_line_pair(dedsec_finding_fn emit, void *user,
+                                    uint64_t zero_count, uint64_t one_count,
+                                    const char *rule, const char *variant) {
+    if (zero_count >= 2 && one_count >= 2 && zero_count + one_count >= 8)
+        return dedsec_emit_finding(emit, user, "structure", rule, variant,
+                                   0, 0, 70, zero_count + one_count);
+    return DEDSEC_OK;
+}
+
+static dedsec_status emit_line_symbols(dedsec_view input,
+                                       line_ending zero_ending,
+                                       line_ending one_ending,
+                                       const char *rule, const char *variant,
+                                       dedsec_finding_fn emit, void *user) {
+    size_t i;
+    for (i = 0; i < input.len;) {
+        size_t length = 0;
+        line_ending kind = line_ending_at(input, i, &length);
+        if (kind == zero_ending || kind == one_ending) {
+            dedsec_status s = dedsec_emit_symbol(emit, user, "structure", rule,
+                                                 variant, i, length,
+                                                 kind == one_ending, 1);
+            if (s != DEDSEC_OK) return s;
+        }
+        i += length ? length : 1;
+    }
+    return DEDSEC_OK;
+}
+
 static dedsec_status structure_detect(void *context, dedsec_view input,
                                       dedsec_finding_fn emit, void *user) {
-    size_t i;
-    uint64_t lf = 0, crlf = 0;
+    size_t i, error = 0;
+    uint64_t lf = 0, crlf = 0, separator = 0;
+    dedsec_status status;
     (void)context;
-    for (i = 0; i < input.len; ++i) {
-        if (input.ptr[i] == '\r' && i + 1 < input.len && input.ptr[i + 1] == '\n') {
-            ++crlf; ++i;
-        } else if (input.ptr[i] == '\n') ++lf;
+    status = dedsec_utf8_foreach(input, validate_scalar, NULL, &error);
+    if (status == DEDSEC_EUTF8) return DEDSEC_OK; /* encoding module owns this */
+    if (status != DEDSEC_OK) return status;
+    for (i = 0; i < input.len;) {
+        size_t length = 0;
+        line_ending kind = line_ending_at(input, i, &length);
+        if (kind == LINE_END_CRLF) ++crlf;
+        else if (kind == LINE_END_LF) ++lf;
+        else if (kind == LINE_END_SEPARATOR) ++separator;
+        i += length ? length : 1;
     }
-    if (lf >= 2 && crlf >= 2 && lf + crlf >= 8)
-        return dedsec_emit_finding(emit, user, "structure", "mixed-line-ending-forms",
-                                   "line-ending-bits-lf-zero", 0, input.len,
-                                   70, lf + crlf);
+    status = emit_line_symbols(input, LINE_END_LF, LINE_END_CRLF,
+                               "mixed-line-ending-forms",
+                               "line-ending-bits-lf-zero", emit, user);
+    if (status != DEDSEC_OK) return status;
+    status = emit_line_symbols(input, LINE_END_LF, LINE_END_SEPARATOR,
+                               "mixed-line-ending-lf-line-separator",
+                               "line-ending-bits-lf-line-separator-zero",
+                               emit, user);
+    if (status != DEDSEC_OK) return status;
+    status = emit_line_symbols(input, LINE_END_CRLF, LINE_END_SEPARATOR,
+                               "mixed-line-ending-crlf-line-separator",
+                               "line-ending-bits-crlf-line-separator-zero",
+                               emit, user);
+    if (status != DEDSEC_OK) return status;
+    status = emit_line_pair(emit, user, lf, crlf, "mixed-line-ending-forms",
+                            "line-ending-bits-lf-zero");
+    if (status != DEDSEC_OK) return status;
+    status = emit_line_pair(emit, user, lf, separator,
+                            "mixed-line-ending-lf-line-separator",
+                            "line-ending-bits-lf-line-separator-zero");
+    if (status != DEDSEC_OK) return status;
+    status = emit_line_pair(emit, user, crlf, separator,
+                            "mixed-line-ending-crlf-line-separator",
+                            "line-ending-bits-crlf-line-separator-zero");
+    if (status != DEDSEC_OK) return status;
     return DEDSEC_OK;
 }
 
@@ -136,16 +228,35 @@ static dedsec_status structure_decode(void *context, dedsec_view input,
     size_t i, error = 0;
     unit_state x = {0};
     dedsec_status s;
-    int reverse;
+    line_ending zero_ending, one_ending;
     (void)context;
     if (dedsec_streq(request->variant, "line-ending-bits-lf-zero") ||
-        dedsec_streq(request->variant, "line-ending-bits-crlf-zero")) {
-        reverse = dedsec_streq(request->variant, "line-ending-bits-crlf-zero");
-        for (i = 0; i < input.len; ++i) {
+        dedsec_streq(request->variant, "line-ending-bits-crlf-zero") ||
+        dedsec_streq(request->variant, "line-ending-bits-lf-line-separator-zero") ||
+        dedsec_streq(request->variant, "line-ending-bits-crlf-line-separator-zero")) {
+        if (dedsec_streq(request->variant, "line-ending-bits-lf-zero")) {
+            zero_ending = LINE_END_LF; one_ending = LINE_END_CRLF;
+        } else if (dedsec_streq(request->variant, "line-ending-bits-crlf-zero")) {
+            zero_ending = LINE_END_CRLF; one_ending = LINE_END_LF;
+        } else if (dedsec_streq(request->variant,
+                                "line-ending-bits-lf-line-separator-zero")) {
+            zero_ending = LINE_END_LF; one_ending = LINE_END_SEPARATOR;
+        } else {
+            zero_ending = LINE_END_CRLF; one_ending = LINE_END_SEPARATOR;
+        }
+        s = dedsec_utf8_foreach(input, validate_scalar, NULL, &error);
+        if (s != DEDSEC_OK) return s;
+        for (i = 0; i < input.len;) {
+            size_t length = 0;
+            line_ending kind = line_ending_at(input, i, &length);
             unsigned bit;
-            if (input.ptr[i] == '\r' && i + 1 < input.len && input.ptr[i + 1] == '\n') {
-                bit = reverse ? 0u : 1u; ++i;
-            } else if (input.ptr[i] == '\n') bit = reverse ? 1u : 0u;
+            if (kind == LINE_END_NONE) {
+                ++i;
+                continue;
+            }
+            i += length;
+            if (kind == zero_ending) bit = 0;
+            else if (kind == one_ending) bit = 1;
             else continue;
             s = dedsec_bitstream_append_bits(output, (uint8_t)bit, 1, 0);
             if (s != DEDSEC_OK) return s;

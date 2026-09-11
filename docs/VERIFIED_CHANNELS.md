@@ -10,6 +10,7 @@ on the same primitives. All used harmless payloads
 | Invisible symbols | ZWSP/ZWNJ binary; Unicode tag bytes | Exact | Code-point alphabet scanner |
 | Bidi isolates | balanced empty LRI/RLI binary with PDI closers | Exact | Structural carrier gate plus isolate decoder |
 | Variation syntax | `U+FE00..U+FE0F` nibble values | Exact | Base/selector validation plus radix decoder |
+| Mongolian variation syntax | `U+1820 U+180B` / `U+1820 U+180C` | Conditional | Raw selector-pair lane; font and shaping context dependent |
 | Script confusables | Latin `a` / Cyrillic `а` | Exact | Script runs and UTS #39 skeletons |
 | Canonical aliases | composed/decomposed Hangul, Bengali, Devanagari | Exact before NFC | Normalized shadow plus raw-span signature |
 | Compatibility aliases | Thai decomposition, Arabic presentation forms | Exact before NFKC | NFC/NFKC differential signature |

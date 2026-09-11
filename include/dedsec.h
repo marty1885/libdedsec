@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define DEDSEC_ABI_VERSION 2u
+#define DEDSEC_ABI_VERSION 3u
 
 /* Filters for Markdown unordered-list trial decoders. */
 #define DEDSEC_MARKDOWN_UL_TOP_LEVEL_ONLY 0x00000001u
@@ -72,6 +72,11 @@ typedef struct dedsec_bitstream_filter_result {
     size_t decoded_length;
 } dedsec_bitstream_filter_result;
 
+typedef enum dedsec_detection_kind {
+    DEDSEC_DETECTION_FINDING = 0,
+    DEDSEC_DETECTION_SYMBOL = 1
+} dedsec_detection_kind;
+
 typedef struct dedsec_finding {
     const char *module_id;
     const char *rule_id;
@@ -80,6 +85,9 @@ typedef struct dedsec_finding {
     size_t byte_length;
     uint32_t score;       /* heuristic, 0..100; never a probability */
     uint64_t evidence;
+    dedsec_detection_kind kind;
+    uint8_t symbol_value; /* valid only for DEDSEC_DETECTION_SYMBOL */
+    uint8_t symbol_width; /* 1..8, valid only for symbol observations */
 } dedsec_finding;
 
 typedef int (*dedsec_finding_fn)(void *user, const dedsec_finding *finding);
@@ -159,6 +167,12 @@ const dedsec_module *dedsec_registry_find(const dedsec_registry *registry,
 dedsec_status dedsec_detect_all(const dedsec_registry *registry,
                                 dedsec_view input,
                                 dedsec_finding_fn emit, void *user);
+/* Glue caller-selected symbol observations in raw source order. Events must
+ * have kind DEDSEC_DETECTION_SYMBOL and non-overlapping byte spans. The input
+ * array is not modified. Callers retain the events as per-bit provenance. */
+dedsec_status dedsec_symbols_glue_source_order(const dedsec_finding *events,
+                                               size_t event_count,
+                                               dedsec_bitstream *output);
 dedsec_status dedsec_decode(const dedsec_registry *registry,
                             const char *module_id, dedsec_view input,
                             const dedsec_decode_request *request,
@@ -275,6 +289,9 @@ dedsec_status dedsec_transform_strip_known_ignorables(void *context,
                                                       dedsec_text *output);
 
 const dedsec_module *dedsec_builtin_unicode_module(void);
+/* Fixed, reviewed Unicode representation identities. Detection is deliberately
+ * gated for recurrence and balance; a finding remains a hypothesis. */
+const dedsec_module *dedsec_builtin_identity_module(void);
 const dedsec_module *dedsec_builtin_layout_module(void);
 const dedsec_module *dedsec_builtin_encoding_module(void);
 const dedsec_module *dedsec_builtin_surface_module(void);

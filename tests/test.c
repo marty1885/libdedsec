@@ -7,7 +7,9 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
 static int count_finding(void *u, const dedsec_finding *f) {
-    size_t *n = (size_t *)u; (void)f; ++*n; return 0;
+    size_t *n = (size_t *)u;
+    if (f->kind == DEDSEC_DETECTION_FINDING) ++*n;
+    return 0;
 }
 static int count_match(void *u, const dedsec_match *m) {
     size_t *n = (size_t *)u; CHECK(m->source_offset == 0); ++*n; return 0;
@@ -15,20 +17,56 @@ static int count_match(void *u, const dedsec_match *m) {
 typedef struct finding_capture { size_t count, offset, length; } finding_capture;
 static int capture_base64(void *u, const dedsec_finding *f) {
     finding_capture *capture = (finding_capture *)u;
-    if (strcmp(f->rule_id, "base64-rfc4648-token") == 0) {
+    if (f->kind == DEDSEC_DETECTION_FINDING &&
+        strcmp(f->rule_id, "base64-rfc4648-token") == 0) {
         ++capture->count; capture->offset = f->byte_offset; capture->length = f->byte_length;
     }
     return 0;
 }
 static int capture_zwsp_zwnj(void *u, const dedsec_finding *f) {
     size_t *count = (size_t *)u;
-    if (f->decoder_hint && strcmp(f->decoder_hint, "zwsp-zwnj-msb") == 0) ++*count;
+    if (f->kind == DEDSEC_DETECTION_FINDING && f->decoder_hint &&
+        strcmp(f->decoder_hint, "zwsp-zwnj-msb") == 0) ++*count;
     return 0;
 }
 static int capture_bidi_binary(void *u, const dedsec_finding *f) {
     size_t *count = (size_t *)u;
-    if (f->decoder_hint && strcmp(f->decoder_hint, "bidi-isolate-bits-msb") == 0)
+    if (f->kind == DEDSEC_DETECTION_FINDING && f->decoder_hint &&
+        strcmp(f->decoder_hint, "bidi-isolate-bits-msb") == 0)
         ++*count;
+    return 0;
+}
+typedef struct variant_capture { const char *module; const char *variant; size_t count; } variant_capture;
+static int capture_variant(void *u, const dedsec_finding *f) {
+    variant_capture *capture = (variant_capture *)u;
+    if (f->kind == DEDSEC_DETECTION_FINDING &&
+        strcmp(f->module_id, capture->module) == 0 && f->decoder_hint &&
+        strcmp(f->decoder_hint, capture->variant) == 0) ++capture->count;
+    return 0;
+}
+typedef struct identity_capture { const char *variant; size_t count; } identity_capture;
+static int capture_identity(void *u, const dedsec_finding *f) {
+    identity_capture *capture = (identity_capture *)u;
+    if (f->kind == DEDSEC_DETECTION_FINDING &&
+        strcmp(f->module_id, "identity") == 0 && f->decoder_hint &&
+        strcmp(f->decoder_hint, capture->variant) == 0) ++capture->count;
+    return 0;
+}
+typedef struct symbol_capture {
+    dedsec_finding events[64];
+    size_t count;
+    size_t findings;
+} symbol_capture;
+static int capture_composite_symbols(void *opaque, const dedsec_finding *f) {
+    symbol_capture *capture = (symbol_capture *)opaque;
+    if (f->kind == DEDSEC_DETECTION_FINDING) {
+        ++capture->findings;
+    } else if (f->decoder_hint &&
+               (strcmp(f->decoder_hint, "hyphen-identity-bits") == 0 ||
+                strcmp(f->decoder_hint, "mongolian-fvs1-fvs2-bits-msb") == 0)) {
+        CHECK(capture->count < sizeof(capture->events) / sizeof(capture->events[0]));
+        capture->events[capture->count++] = *f;
+    }
     return 0;
 }
 static dedsec_view view(const void *p, size_t n) {
@@ -84,6 +122,208 @@ static void decode_bits_expect(dedsec_registry *r, const char *module,
     CHECK(out.bytes.len == expected_bytes);
     CHECK(memcmp(out.bytes.ptr, expected, expected_bytes) == 0);
     dedsec_bitstream_free(&out);
+}
+static void append_identity_carrier(dedsec_buffer *carrier, dedsec_view zero,
+                                    dedsec_view one, int alternating) {
+    size_t i;
+    for (i = 0; i < 32; ++i) {
+        const uint8_t *symbol = (alternating && (i & 1u)) ? one.ptr : zero.ptr;
+        size_t length = (alternating && (i & 1u)) ? one.len : zero.len;
+        CHECK(dedsec_buffer_append(carrier, "a", 1) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(carrier, symbol, length) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(carrier, "b|", 2) == DEDSEC_OK);
+    }
+}
+static void identity_case_expect(dedsec_registry *registry, const char *variant,
+                                 dedsec_view zero, dedsec_view one) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const uint8_t malformed[] = {0xc0, 0xaf};
+    dedsec_buffer carrier;
+    dedsec_decode_request request = {variant, 0, NULL, 0};
+    dedsec_bitstream output;
+    identity_capture capture = {variant, 0};
+    dedsec_buffer_init(&carrier);
+    append_identity_carrier(&carrier, zero, one, 1);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_identity, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 1);
+    decode_bits_expect(registry, "identity", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, expected, sizeof(expected));
+    carrier.len = 0;
+    capture.count = 0;
+    append_identity_carrier(&carrier, zero, one, 0);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_identity, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "identity", view(malformed, sizeof(malformed)),
+                             &request, &output) == DEDSEC_EUTF8);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
+static void line_identity_case_expect(dedsec_registry *registry,
+                                      const char *variant,
+                                      dedsec_view zero, dedsec_view one) {
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const uint8_t malformed[] = {0xe2, 0x80};
+    dedsec_buffer carrier;
+    dedsec_decode_request request = {variant, 0, NULL, 0};
+    dedsec_bitstream output;
+    variant_capture capture = {"structure", variant, 0};
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        dedsec_view symbol = (i & 1u) ? one : zero;
+        CHECK(dedsec_buffer_append(&carrier, symbol.ptr, symbol.len) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 1);
+    decode_bits_expect(registry, "structure", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, expected, sizeof(expected));
+    carrier.len = 0;
+    capture.count = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, zero.ptr, zero.len) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "structure", view(malformed, sizeof(malformed)),
+                             &request, &output) == DEDSEC_EUTF8);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
+static void mongolian_fvs_case_expect(dedsec_registry *registry) {
+    static const uint8_t fvs1[] = {0xe1,0xa0,0xa0,0xe1,0xa0,0x8b};
+    static const uint8_t fvs2[] = {0xe1,0xa0,0xa0,0xe1,0xa0,0x8c};
+    static const uint8_t fvs3[] = {0xe1,0xa0,0xa0,0xe1,0xa0,0x8d};
+    static const uint8_t malformed[] = {0xe1,0xa0};
+    static const uint8_t expected[] = {0x55, 0x55, 0x55, 0x55};
+    static const char *variant = "mongolian-fvs1-fvs2-bits-msb";
+    dedsec_decode_request request = {variant, 0, NULL, 0};
+    variant_capture capture = {"unicode", variant, 0};
+    dedsec_buffer carrier;
+    dedsec_bitstream output;
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        const uint8_t *slot = (i & 1u) ? fvs2 : fvs1;
+        CHECK(dedsec_buffer_append(&carrier, slot, sizeof(fvs1)) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, " ", 1) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 1);
+    decode_bits_expect(registry, "unicode", variant, carrier.ptr, carrier.len,
+                       NULL, 0, 32, expected, sizeof(expected));
+    carrier.len = 0;
+    capture.count = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, fvs1, sizeof(fvs1)) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    carrier.len = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, fvs3, sizeof(fvs3)) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_decode_bits(registry, "unicode", view(malformed, sizeof(malformed)),
+                             &request, &output) == DEDSEC_EUTF8);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
+static void composite_source_order_expect(dedsec_registry *registry) {
+    static const uint8_t expected[] = {'O', 'K', 'O', 'K'};
+    static const uint8_t hyphen[2][3] = {
+        {0x2d,0x00,0x00}, {0xe2,0x80,0x91}
+    };
+    static const size_t hyphen_length[2] = {1, 3};
+    static const uint8_t mongolian[2][6] = {
+        {0xe1,0xa0,0xa0,0xe1,0xa0,0x8b},
+        {0xe1,0xa0,0xa0,0xe1,0xa0,0x8c}
+    };
+    dedsec_buffer carrier;
+    dedsec_bitstream output;
+    symbol_capture capture = {0};
+    dedsec_finding overlap[2];
+    size_t i, identity_count = 0, mongolian_count = 0;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        uint8_t bit = (uint8_t)((expected[i / 8] >> (7u - (i % 8))) & 1u);
+        if ((i & 1u) == 0) {
+            CHECK(dedsec_buffer_append(&carrier, hyphen[bit],
+                                       hyphen_length[bit]) == DEDSEC_OK);
+        } else {
+            CHECK(dedsec_buffer_append(&carrier, mongolian[bit],
+                                       sizeof(mongolian[bit])) == DEDSEC_OK);
+        }
+        CHECK(dedsec_buffer_append(&carrier, "|", 1) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_composite_symbols, &capture) == DEDSEC_OK);
+    CHECK(capture.findings == 0);
+    CHECK(capture.count == 32);
+    for (i = 0; i < capture.count; ++i) {
+        CHECK(capture.events[i].byte_length > 0);
+        CHECK(capture.events[i].byte_offset <=
+              carrier.len - capture.events[i].byte_length);
+        if (strcmp(capture.events[i].decoder_hint, "hyphen-identity-bits") == 0)
+            ++identity_count;
+        else
+            ++mongolian_count;
+    }
+    CHECK(identity_count == 16);
+    CHECK(mongolian_count == 16);
+    dedsec_bitstream_init(&output);
+    CHECK(dedsec_symbols_glue_source_order(capture.events, capture.count,
+                                           &output) == DEDSEC_OK);
+    CHECK(output.bit_length == 32);
+    CHECK(output.bytes.len == sizeof(expected));
+    CHECK(memcmp(output.bytes.ptr, expected, sizeof(expected)) == 0);
+    overlap[0] = capture.events[0];
+    overlap[1] = capture.events[0];
+    CHECK(dedsec_symbols_glue_source_order(overlap, 2, &output) == DEDSEC_EINVAL);
+    CHECK(output.bit_length == 0);
+    dedsec_bitstream_free(&output);
+    dedsec_buffer_free(&carrier);
+}
+static void trailing_hspace_case_expect(dedsec_registry *registry) {
+    static const uint8_t expected_low_bit[] = {0xaa, 0xaa, 0xaa, 0xaa};
+    static const uint8_t expected_pair[] = {0x55, 0x55, 0x55, 0x55};
+    static const dedsec_binary_rule pair_rule = {
+        DEDSEC_BINARY_EQUALS_PAIR, 1, 2, 1, 0, 0
+    };
+    variant_capture capture = {"layout", "trailing-hspace-width-low-bit", 0};
+    dedsec_buffer carrier;
+    size_t i;
+    dedsec_buffer_init(&carrier);
+    for (i = 0; i < 32; ++i) {
+        size_t width = (i & 1u) ? 2 : 1;
+        CHECK(dedsec_buffer_append(&carrier, "x", 1) == DEDSEC_OK);
+        while (width--) CHECK(dedsec_buffer_append(&carrier, " ", 1) == DEDSEC_OK);
+        CHECK(dedsec_buffer_append(&carrier, "\n", 1) == DEDSEC_OK);
+    }
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 1);
+    decode_bits_expect(registry, "layout", "trailing-hspace-width-low-bit",
+                       carrier.ptr, carrier.len, NULL, 0, 32,
+                       expected_low_bit, sizeof(expected_low_bit));
+    decode_bits_expect(registry, "layout", "trailing-hspace-rule",
+                       carrier.ptr, carrier.len, &pair_rule, sizeof(pair_rule), 32,
+                       expected_pair, sizeof(expected_pair));
+    carrier.len = 0;
+    capture.count = 0;
+    for (i = 0; i < 32; ++i)
+        CHECK(dedsec_buffer_append(&carrier, "x \n", 3) == DEDSEC_OK);
+    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                            capture_variant, &capture) == DEDSEC_OK);
+    CHECK(capture.count == 0);
+    dedsec_buffer_free(&carrier);
 }
 
 int main(void) {
@@ -217,7 +457,44 @@ int main(void) {
 
     dedsec_registry_init(&registry);
     CHECK(dedsec_registry_add_builtins(&registry) == DEDSEC_OK);
-    CHECK(registry.count == 6);
+    {
+        static const uint8_t space_zero[] = {0x20};
+        static const uint8_t space_one[] = {0xc2, 0xa0};
+        static const uint8_t acute_zero[] = {0xc3, 0xa9};
+        static const uint8_t acute_one[] = {0x65, 0xcc, 0x81};
+        static const uint8_t hyphen_zero[] = {0x2d};
+        static const uint8_t hyphen_one[] = {0xe2, 0x80, 0x91};
+        static const uint8_t mark_order_zero[] = {0x61, 0xcc, 0xa3, 0xcc, 0x81};
+        static const uint8_t mark_order_one[] = {0x61, 0xcc, 0x81, 0xcc, 0xa3};
+        dedsec_view zero = {space_zero, sizeof(space_zero)};
+        dedsec_view one = {space_one, sizeof(space_one)};
+        identity_case_expect(&registry, "space-identity-bits", zero, one);
+        zero.ptr = acute_zero; zero.len = sizeof(acute_zero);
+        one.ptr = acute_one; one.len = sizeof(acute_one);
+        identity_case_expect(&registry, "canonical-e-acute-identity-bits", zero, one);
+        zero.ptr = hyphen_zero; zero.len = sizeof(hyphen_zero);
+        one.ptr = hyphen_one; one.len = sizeof(hyphen_one);
+        identity_case_expect(&registry, "hyphen-identity-bits", zero, one);
+        zero.ptr = mark_order_zero; zero.len = sizeof(mark_order_zero);
+        one.ptr = mark_order_one; one.len = sizeof(mark_order_one);
+        identity_case_expect(&registry, "canonical-combining-order-bits", zero, one);
+    }
+    {
+        static const uint8_t lf[] = {0x0a};
+        static const uint8_t crlf[] = {0x0d, 0x0a};
+        static const uint8_t line_separator[] = {0xe2, 0x80, 0xa8};
+        line_identity_case_expect(&registry, "line-ending-bits-lf-line-separator-zero",
+                                  view(lf, sizeof(lf)),
+                                  view(line_separator, sizeof(line_separator)));
+        line_identity_case_expect(&registry,
+                                  "line-ending-bits-crlf-line-separator-zero",
+                                  view(crlf, sizeof(crlf)),
+                                  view(line_separator, sizeof(line_separator)));
+    }
+    mongolian_fvs_case_expect(&registry);
+    composite_source_order_expect(&registry);
+    trailing_hspace_case_expect(&registry);
+    CHECK(registry.count == 7);
     memcpy(zw_with_tail, zw, sizeof(zw));
     zw_with_tail[sizeof(zw)] = 0xe2;
     zw_with_tail[sizeof(zw) + 1] = 0x80;

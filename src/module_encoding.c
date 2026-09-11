@@ -36,8 +36,35 @@ static dedsec_status encoding_detect(void *context, dedsec_view input,
         if (input.ptr[i] == 0) ++nuls;
         if (i + 2 < input.len && input.ptr[i] == 0x1b &&
             input.ptr[i + 1] == '(' &&
-            (input.ptr[i + 2] == 'B' || input.ptr[i + 2] == 'J')) ++escapes;
+            (input.ptr[i + 2] == 'B' || input.ptr[i + 2] == 'J')) {
+            ++escapes;
+            status = dedsec_emit_symbol(emit, user, "encoding",
+                                         "iso2022-redundant-designations",
+                                         "iso2022-designation-bits-msb",
+                                         i, 3, input.ptr[i + 2] == 'J', 1);
+            if (status != DEDSEC_OK) return status;
+        }
         if (cesu_astral(input.ptr + i, input.len - i)) ++cesu;
+    }
+    for (i = 0; i < input.len;) {
+        size_t length;
+        uint8_t value;
+        if (standard_astral(input.ptr + i, input.len - i)) {
+            length = 4;
+            value = 0;
+        } else if (cesu_astral(input.ptr + i, input.len - i)) {
+            length = 6;
+            value = 1;
+        } else {
+            ++i;
+            continue;
+        }
+        status = dedsec_emit_symbol(emit, user, "encoding",
+                                     "cesu8-surrogate-pairs",
+                                     "utf8-cesu8-form-bits-msb",
+                                     i, length, value, 1);
+        if (status != DEDSEC_OK) return status;
+        i += length;
     }
     if (nuls) {
         status = dedsec_emit_finding(emit, user, "encoding", "embedded-nul",

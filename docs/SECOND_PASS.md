@@ -22,7 +22,7 @@ channels.
 |---|---|---|
 | Configurable invisible radix | bidi opener type, U+2061..U+2064 math controls, U+1BCA0..U+1BCA3 shorthand controls, noncharacters | Implemented through `codepoint-map-msb/lsb`; suspicious ranges detected |
 | Legacy codec equivalence | standard UTF-8 versus CESU-8 surrogate serialization | Dedicated detection and decoder implemented |
-| Parser-source spelling | JSON literal/escape and number forms; URI raw/percent; HTML/XML reference radix; C escape radix | Implemented through caller-defined `token-map-msb/lsb`; common lexical markers detected |
+| Parser-source spelling | Format-specific literal, escape, numeric, and lexical forms | Implemented through caller-defined `token-map-msb/lsb`; common lexical markers detected |
 | Structured semantic aliases | XML prefixes resolving to one namespace, CDATA/direct text, MIME Q/B, ANSI reset forms | Token alphabet supports controlled-region trials; full semantic validators remain extension modules |
 | Domain lexical aliases | IPv6 hextet width, C11 trigraph/direct spelling | Token alphabet supports trials; markers detected where safe; domain parsers remain extensions |
 | Non-Latin orthography | repeated ideograph versus U+3005 iteration mark | Dedicated decoder and anomaly signal implemented |
@@ -41,7 +41,8 @@ for:
 - Japanese doubled ideograph versus U+3005 iteration mark.
 
 Earlier executable carriers remain for Unicode tags, ZWSP/ZWNJ, variation
-selectors, ISO-2022 designations, and trailing-space width. A clean ordinary
+selectors, ISO-2022 designations, and trailing-EOL horizontal-whitespace width.
+A clean ordinary
 prose fixture is included as a zero-finding negative control.
 
 ## Rejected or gated hypotheses
@@ -50,9 +51,9 @@ prose fixture is included as a zero-finding negative control.
   error and is not exposed as a normal decoder.
 - BOM choice is meaningful only across externally framed records. A single BOM
   is not treated as a payload.
-- HTML, XML, JSON, URI, MIME, ANSI, IPv6, and C-source equivalence claims require
-  the matching grammar context. The generic token decoder does not assert
-  semantic equivalence; the caller or a specialized module must establish it.
+- Format-specific equivalence claims require the matching grammar context. The
+  generic token decoder does not assert semantic equivalence; the caller or a
+  specialized module must establish it.
 - Ternary alphabets require explicit length/radix framing. The current bit
   writer intentionally supports power-of-two alphabets only.
 

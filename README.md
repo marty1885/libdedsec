@@ -8,9 +8,13 @@ The name is taken from the Watch Dogs series. it reflects the urgency of getting
 
 ## Features
 
-- Strict UTF-8 decoding with source-byte offsets; detection for malformed UTF-8, embedded NULs, BOMs, ISO-2022 designations, default-ignorable and bidi code points, variation selectors, tags, noncharacters, iteration marks, and surface forms such as JSON escapes, URI percent escapes, RFC 2047, C trigraphs, and ANSI controls.
-- Trial decoders for tag bytes, zero-width binary, variation-selector nibbles, structurally gated bidi-isolate binary, ISO-2022 designations, whitespace, case, punctuation, parity, CESU-8 forms, Japanese iteration marks, Base64/Base32, Markdown unordered lists, and conservative structural signals.
+- Strict UTF-8 decoding with source-byte offsets; detection for malformed UTF-8, embedded NULs, BOMs, ISO-2022 designations, default-ignorable and bidi code points, standardized variation selectors (including a bounded Mongolian FVS lane), tags, noncharacters, iteration marks, and surface forms such as JSON escapes, URI percent escapes, RFC 2047, C trigraphs, and ANSI controls.
+- Trial decoders for tag bytes, zero-width binary, variation-selector nibbles, bounded Mongolian FVS1/FVS2 bits, structurally gated bidi-isolate binary, ISO-2022 designations, generic trailing-EOL horizontal-whitespace widths, case, punctuation, parity, CESU-8 forms, Japanese iteration marks, fixed reviewed Unicode identity pairs (including canonical combining order), LF/CRLF/LINE-SEPARATOR representation lanes, Base64/Base32, Markdown unordered lists, and conservative structural signals.
 - Extensible modules, feature extraction and bit conversion, caller-defined code-point or token alphabets, bit-exact output with partial-byte retention, and transform-chain substring search with source-offset provenance.
+- ABI-v3 detection callbacks distinguish aggregate findings from sub-threshold
+  symbol observations. Parameter-free built-in lanes expose each candidate
+  value, bit width, and raw byte span so callers can display provenance or
+  conservatively glue selected non-overlapping lanes in source order.
 
 ## Build and test
 
@@ -46,6 +50,14 @@ dedsec_buffer_free(&candidate);
 dedsec_registry_free(&registry);
 ```
 
+Callbacks must inspect `finding.kind`. `DEDSEC_DETECTION_FINDING` is an
+aggregate anomaly; `DEDSEC_DETECTION_SYMBOL` is a possible bit/nibble event and
+is emitted even below the aggregate lane gate. A symbol is not independently
+an alert. Collect reviewed symbol events, retain them for provenance, and pass
+a non-overlapping caller-selected subset to
+`dedsec_symbols_glue_source_order()`. See the
+[composite-channel contract](docs/COMPOSITE_CHANNELS.md).
+
 ## Bit-exact decoding
 
 `dedsec_decode()` returns only whole bytes. For forensic work use `dedsec_decode_bits()` and `dedsec_bitstream`; `bit_length` preserves a final partial byte, whose unused low bits are zero in storage. New modules should implement `decode_bits`; legacy `decode` modules are represented as whole-byte streams.
@@ -78,3 +90,5 @@ plausible supported plaintext," not "no hidden payload." See the
 Scores are not probabilities, printable output is not proof of a message, and short random bitstreams can look meaningful. Unicode coverage is intentionally conservative; normalization, transcoding, full Unicode services, cryptanalysis, image analysis, metadata, networking, and indexing are out of scope. Preserve original bytes before charset conversion or normalization, which can destroy the signal under investigation.
 
 See [the threat model](docs/THREAT_MODEL.md), [verified channels](docs/VERIFIED_CHANNELS.md), and [the second sampling pass](docs/SECOND_PASS.md).
+The fixed reviewed Unicode identity registry and its evidence limits are in
+[the identity-module contract](docs/IDENTITY_MODULE.md).

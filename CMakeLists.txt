@@ -6,12 +6,14 @@ include(CTest)
 
 set(LIBDEDSEC_SOURCES
     src/core.c
+    src/composite.c
     src/bitstream_filter.c
     src/utf8.c
     src/features.c
     src/search.c
     src/module_encoding.c
     src/module_unicode.c
+    src/module_identity.c
     src/module_layout.c
     src/module_surface.c
     src/module_structure.c

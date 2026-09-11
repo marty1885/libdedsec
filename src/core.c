@@ -110,16 +110,17 @@ const dedsec_module *dedsec_registry_find(const dedsec_registry *registry,
 }
 
 dedsec_status dedsec_registry_add_builtins(dedsec_registry *registry) {
-    const dedsec_module *mods[6];
+    const dedsec_module *mods[7];
     size_t i;
     dedsec_status status;
     mods[0] = dedsec_builtin_encoding_module();
     mods[1] = dedsec_builtin_unicode_module();
-    mods[2] = dedsec_builtin_layout_module();
-    mods[3] = dedsec_builtin_surface_module();
-    mods[4] = dedsec_builtin_structure_module();
-    mods[5] = dedsec_builtin_markdown_module();
-    for (i = 0; i < 6; ++i) {
+    mods[2] = dedsec_builtin_identity_module();
+    mods[3] = dedsec_builtin_layout_module();
+    mods[4] = dedsec_builtin_surface_module();
+    mods[5] = dedsec_builtin_structure_module();
+    mods[6] = dedsec_builtin_markdown_module();
+    for (i = 0; i < 7; ++i) {
         status = dedsec_registry_add(registry, mods[i]);
         if (status != DEDSEC_OK) return status;
     }
@@ -137,6 +138,30 @@ dedsec_status dedsec_emit_finding(dedsec_finding_fn emit, void *user,
     finding.decoder_hint = decoder; finding.byte_offset = offset;
     finding.byte_length = length; finding.score = score;
     finding.evidence = evidence;
+    finding.kind = DEDSEC_DETECTION_FINDING;
+    finding.symbol_value = 0;
+    finding.symbol_width = 0;
+    return emit(user, &finding) ? DEDSEC_ESTOP : DEDSEC_OK;
+}
+
+dedsec_status dedsec_emit_symbol(dedsec_finding_fn emit, void *user,
+                                 const char *module, const char *rule,
+                                 const char *decoder, size_t offset,
+                                 size_t length, uint8_t value,
+                                 uint8_t width) {
+    dedsec_finding finding;
+    if (!emit || !width || width > 8 || value >= (1u << width))
+        return DEDSEC_EINVAL;
+    finding.module_id = module;
+    finding.rule_id = rule;
+    finding.decoder_hint = decoder;
+    finding.byte_offset = offset;
+    finding.byte_length = length;
+    finding.score = 0;
+    finding.evidence = 1;
+    finding.kind = DEDSEC_DETECTION_SYMBOL;
+    finding.symbol_value = value;
+    finding.symbol_width = width;
     return emit(user, &finding) ? DEDSEC_ESTOP : DEDSEC_OK;
 }
 

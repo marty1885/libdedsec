@@ -92,6 +92,14 @@ static dedsec_status detect_radix_tokens(dedsec_view input, dedsec_finding_fn em
         s = decode_radix(token, &trial, radix, bits, padded);
         dedsec_bitstream_free(&trial);
         if (s == DEDSEC_OK) {
+            size_t j;
+            for (j = 0; j < length && token.ptr[j] != '='; ++j) {
+                int value = radix_value(token.ptr[j], radix);
+                s = dedsec_emit_symbol(emit, user, "surface", rule, variant,
+                                       start + j, 1, (uint8_t)value,
+                                       (uint8_t)bits);
+                if (s != DEDSEC_OK) return s;
+            }
             s = dedsec_emit_finding(emit, user, "surface", rule, variant,
                                     start, length, 15, length);
             if (s != DEDSEC_OK) return s;

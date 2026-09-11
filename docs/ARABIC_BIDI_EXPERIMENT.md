@@ -65,7 +65,7 @@ empty-isolate ratio, and document-normalized density. The recovered stream must
 then pass `dedsec_bitstream_filter()` as `LIKELY`.
 
 This remains a deliberately dense channel and a limited corpus. Sparse
-embedding, naturally control-rich documents, HTML rendered to plain text,
+embedding, naturally control-rich documents, markup rendered to plain text,
 localization resources, chat exports, Persian/Urdu, and malicious use of
 legitimate LTR substrings require separate evaluation.
 

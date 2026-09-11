@@ -11,13 +11,16 @@ typedef struct unicode_scan {
     void *user;
     dedsec_status status;
     uint64_t ignorables, selectors, tags, bidi, interior_bom, zwsp, zwnj;
+    uint64_t mongolian_fvs1, mongolian_fvs2;
     uint64_t noncharacters, shorthand, iteration;
     uint64_t scalars, lri, rli, fsi, pdi, matched_binary_isolates;
     uint64_t empty_binary_isolates, empty_after_arabic, unmatched_pdi, stack_overflow;
     size_t first_ignorable, first_selector, first_tag, first_bidi, first_bom;
+    size_t first_mongolian_fvs;
     size_t first_noncharacter, first_shorthand, first_iteration;
     uint32_t previous_cp;
     int have_previous;
+    int in_tag_payload;
     bidi_frame bidi_stack[128];
     size_t bidi_depth;
 } unicode_scan;
@@ -43,6 +46,7 @@ static int arabic_letter(uint32_t cp) {
 static int scan_scalar(void *opaque, const dedsec_scalar *s) {
     unicode_scan *x = (unicode_scan *)opaque;
     uint32_t cp = s->value;
+    dedsec_status emitted = DEDSEC_OK;
     ++x->scalars;
     if (cp == 0x2066 || cp == 0x2067 || cp == 0x2068) {
         if (cp == 0x2066) ++x->lri;
@@ -78,13 +82,62 @@ static int scan_scalar(void *opaque, const dedsec_scalar *s) {
     }
     if (cp == 0x200b) ++x->zwsp;
     if (cp == 0x200c) ++x->zwnj;
+    if (cp == 0x200b || cp == 0x200c) {
+        emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                     "zero-width-binary-symbols",
+                                     "zwsp-zwnj-msb", s->byte_offset,
+                                     s->byte_length, cp == 0x200c, 1);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+    }
     if (in_range(cp, 0xfe00, 0xfe0f) || in_range(cp, 0xe0100, 0xe01ef)) {
         if (!x->selectors) x->first_selector = s->byte_offset;
         ++x->selectors;
     }
+    if (in_range(cp, 0xfe00, 0xfe0f)) {
+        emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                     "variation-selectors", "variation-nibbles",
+                                     s->byte_offset, s->byte_length,
+                                     (uint8_t)(cp - 0xfe00), 4);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+    }
+    /* U+180B..U+180D are Mongolian Free Variation Selectors, not the
+     * standardized variation-selector ranges used by variation-nibbles.
+     * Keep their binary observation narrowly bound to the reviewed U+1820
+     * base and FVS1/FVS2 pair; FVS3 remains outside this binary lane. */
+    if (x->have_previous && x->previous_cp == 0x1820) {
+        if (cp == 0x180b) {
+            if (!x->mongolian_fvs1 && !x->mongolian_fvs2)
+                x->first_mongolian_fvs = s->byte_offset;
+            ++x->mongolian_fvs1;
+            emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                         "mongolian-fvs-binary-symbols",
+                                         "mongolian-fvs1-fvs2-bits-msb",
+                                         s->byte_offset, s->byte_length, 0, 1);
+        } else if (cp == 0x180c) {
+            if (!x->mongolian_fvs1 && !x->mongolian_fvs2)
+                x->first_mongolian_fvs = s->byte_offset;
+            ++x->mongolian_fvs2;
+            emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                         "mongolian-fvs-binary-symbols",
+                                         "mongolian-fvs1-fvs2-bits-msb",
+                                         s->byte_offset, s->byte_length, 1, 1);
+        }
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
+    }
     if (in_range(cp, 0xe0001, 0xe007f)) {
         if (!x->tags) x->first_tag = s->byte_offset;
         ++x->tags;
+    }
+    if (cp == 0xe0001) {
+        x->in_tag_payload = 1;
+    } else if (cp == 0xe007f) {
+        x->in_tag_payload = 0;
+    } else if (x->in_tag_payload && in_range(cp, 0xe0020, 0xe007e)) {
+        emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                     "unicode-tags", "tags-ascii",
+                                     s->byte_offset, s->byte_length,
+                                     (uint8_t)(cp - 0xe0000), 8);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
     }
     if (in_range(cp, 0x202a, 0x202e) || in_range(cp, 0x2066, 0x2069) ||
         cp == 0x061c || cp == 0x200e || cp == 0x200f) {
@@ -107,6 +160,13 @@ static int scan_scalar(void *opaque, const dedsec_scalar *s) {
     if (cp == 0x3005) {
         if (!x->iteration) x->first_iteration = s->byte_offset;
         ++x->iteration;
+    }
+    if (cp == 0x2066 || cp == 0x2067) {
+        emitted = dedsec_emit_symbol(x->emit, x->user, "unicode",
+                                     "binary-bidi-isolates",
+                                     "bidi-isolate-bits-msb", s->byte_offset,
+                                     s->byte_length, cp == 0x2067, 1);
+        if (emitted != DEDSEC_OK) { x->status = emitted; return 1; }
     }
     x->previous_cp = cp;
     x->have_previous = 1;
@@ -131,8 +191,10 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     size_t error = 0;
     (void)context;
     x.emit = emit; x.user = user;
-    s = dedsec_utf8_foreach(input, scan_scalar, &x, &error);
+    s = dedsec_utf8_foreach(input, validate_only, NULL, &error);
     if (s == DEDSEC_EUTF8) return DEDSEC_OK; /* encoding module owns this */
+    if (s != DEDSEC_OK) return s;
+    s = dedsec_utf8_foreach(input, scan_scalar, &x, &error);
     if (s != DEDSEC_OK) return s;
     s = emit_count(&x, x.tags, x.first_tag, "unicode-tags", "tags-ascii", 85);
     if (s != DEDSEC_OK) return s;
@@ -148,6 +210,19 @@ static dedsec_status unicode_detect(void *context, dedsec_view input,
     s = emit_count(&x, x.selectors, x.first_selector, "variation-selectors",
                    "variation-nibbles", 45);
     if (s != DEDSEC_OK) return s;
+    {
+        uint64_t symbols = x.mongolian_fvs1 + x.mongolian_fvs2;
+        uint64_t minority = x.mongolian_fvs1 < x.mongolian_fvs2 ?
+            x.mongolian_fvs1 : x.mongolian_fvs2;
+        if (symbols >= 32 && x.mongolian_fvs1 >= 8 && x.mongolian_fvs2 >= 8 &&
+            minority * 5 >= symbols) {
+            s = dedsec_emit_finding(x.emit, x.user, "unicode",
+                                    "mongolian-fvs-binary-symbols",
+                                    "mongolian-fvs1-fvs2-bits-msb",
+                                    x.first_mongolian_fvs, 0, 55, symbols);
+            if (s != DEDSEC_OK) return s;
+        }
+    }
     s = emit_count(&x, x.bidi, x.first_bidi, "bidi-controls", NULL, 60);
     if (s != DEDSEC_OK) return s;
     {
@@ -202,6 +277,8 @@ typedef struct decode_state {
     int lsb_first;
     uint32_t iteration_first;
     int iteration_have_first;
+    uint32_t previous_cp;
+    int have_previous;
     dedsec_status status;
 } decode_state;
 
@@ -236,6 +313,11 @@ static int decode_scalar(void *opaque, const dedsec_scalar *s) {
             unsigned nibble = (unsigned)(cp - 0xfe00);
             x->status = decode_value(x, (uint8_t)nibble, 4);
         }
+    } else if (dedsec_streq(x->variant, "mongolian-fvs1-fvs2-bits-msb")) {
+        if (x->have_previous && x->previous_cp == 0x1820) {
+            if (cp == 0x180b) x->status = decode_bit(x, 0);
+            else if (cp == 0x180c) x->status = decode_bit(x, 1);
+        }
     } else if (dedsec_streq(x->variant, "bidi-isolate-bits-msb")) {
         if (cp == 0x2066 || cp == 0x2067)
             x->status = decode_bit(x, cp == 0x2067);
@@ -260,6 +342,8 @@ static int decode_scalar(void *opaque, const dedsec_scalar *s) {
             x->iteration_have_first = 0;
         }
     }
+    x->previous_cp = cp;
+    x->have_previous = 1;
     return x->status != DEDSEC_OK;
 }
 
@@ -304,6 +388,7 @@ static dedsec_status unicode_decode(void *context, dedsec_view input,
     if (!dedsec_streq(request->variant, "tags-ascii") &&
         !dedsec_streq(request->variant, "zwsp-zwnj-msb") &&
         !dedsec_streq(request->variant, "variation-nibbles") &&
+        !dedsec_streq(request->variant, "mongolian-fvs1-fvs2-bits-msb") &&
         !dedsec_streq(request->variant, "bidi-isolate-bits-msb") &&
         !dedsec_streq(request->variant, "iteration-mark-bits") &&
         !dedsec_streq(request->variant, "codepoint-map-msb") &&

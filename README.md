@@ -25,6 +25,23 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+To inspect detector findings, candidate symbol lanes, extracted bits, filter
+decisions, and exact source spans before triage, build the optional tools:
+
+```sh
+cmake -S . -B build -DDEDSEC_BUILD_TOOLS=ON
+cmake --build build
+./build/dedsec_inspect boot.txt
+./build/dedsec_inspect --natural-text --symbols \
+  --lane layout:word-case-bits document.txt
+```
+
+The default view summarizes every enabled raw symbol lane. `--symbols` adds
+each symbol's bit value, byte span, line and column, and an escaped source
+preview; `--lane MODULE:DECODER` limits lane output. Aggregate `FINDING` spans
+and raw `SYMBOL` spans are printed separately because a document-level finding
+may cover the input while each contributing symbol has exact local provenance.
+
 The project builds with `-std=c11 -pedantic -Wall -Wextra -Werror`. Tests cover generated carrier round trips, malformed UTF-8, and transformed search.
 
 ## Minimal API
@@ -40,6 +57,11 @@ if (dedsec_registry_add_builtins(&registry) != DEDSEC_OK) {
 
 dedsec_view input = {bytes, byte_count};
 dedsec_detect_all(&registry, input, on_finding, user_context);
+
+/* Opt in only after the caller identifies natural-looking prose or a
+ * prose-oriented document such as Markdown or Gemtext. */
+dedsec_detect_all_mode(&registry, input, DEDSEC_DETECT_NATURAL_TEXT,
+                       on_finding, user_context);
 
 dedsec_decode_request request = {"variation-nibbles", 0, NULL, 0};
 dedsec_buffer candidate;
@@ -60,12 +82,21 @@ non-overlapping caller-selected subset to
 `dedsec_symbols_glue_source_order()`. See the
 [composite-channel contract](docs/COMPOSITE_CHANNELS.md).
 
-Case, ordinary one/two-space gaps, punctuation, and mixed Markdown bullets
-remain raw symbols individually. Their complete per-feature lanes are now
-promoted only when the shared bitstream filter finds plausible plaintext,
-opaque data, or modeled structure. Comma/semicolon lanes require plaintext or
-modeled structure by default because ordinary source code repeatedly produced
-opaque-looking false positives. Raw radix/surface-spelling coincidences remain
+`dedsec_detect_all()` uses the low-noise default mode. Generic word-initial
+case, ordinary one/two-space word gaps, and punctuation-choice lanes are
+excluded because machine-oriented text such as configuration, source, and
+logs produces them naturally. A caller analyzing natural-looking prose or a
+prose-oriented Markdown/Gemtext document may enable those lanes with
+`dedsec_detect_all_mode(..., DEDSEC_DETECT_NATURAL_TEXT, ...)`. Direct decoders
+remain available in either mode for an explicitly selected forensic trial.
+
+Case, ordinary one/two-space gaps, and punctuation remain raw symbols
+individually in natural-text mode; mixed Markdown bullets remain available in
+both modes. Their complete per-feature lanes are promoted only when the shared
+bitstream filter finds plausible plaintext, opaque data, or modeled structure.
+Comma/semicolon lanes require plaintext or modeled structure because ordinary
+source code repeatedly produced opaque-looking false positives. Raw
+radix/surface-spelling coincidences remain
 excluded because scoring cannot supply their missing container grammar. Short
 default-ignorable and bidi runs remain raw observations;
 they need recurrence, a field grammar, baseline, framing, or another
@@ -123,3 +154,5 @@ The Gemtext link grammar and separator lanes are described in the
 [Gemtext module contract](docs/GEMTEXT_MODULE.md).
 The bounded implicit-bidi source-order lane and its LTR/protocol constraints
 are described in the [implicit bidi module contract](docs/IMPLICIT_BIDI_MODULE.md).
+The paired higher-order KT and bounded PPM case-lane trial is recorded in
+[the case-model experiment](docs/CASE_MODEL_EXPERIMENT.md).

@@ -214,8 +214,9 @@ static void benchmark_file(const dedsec_registry *registry, const char *path,
     size_t i;
     dedsec_buffer_init(&input);
     if (!read_file(path, &input)) { dedsec_buffer_free(&input); return; }
-    if (dedsec_detect_all(registry, (dedsec_view){input.ptr, input.len},
-                          collect_finding, &findings) != DEDSEC_OK) {
+    if (dedsec_detect_all_mode(registry, (dedsec_view){input.ptr, input.len},
+                               DEDSEC_DETECT_NATURAL_TEXT,
+                               collect_finding, &findings) != DEDSEC_OK) {
         fprintf(stderr, "%s: detector error\n", path);
         dedsec_buffer_free(&input); return;
     }

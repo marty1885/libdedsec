@@ -185,18 +185,33 @@ dedsec_status dedsec_emit_observation(dedsec_finding_fn emit, void *user,
     return emit(user, &finding) ? DEDSEC_ESTOP : DEDSEC_OK;
 }
 
-dedsec_status dedsec_detect_all(const dedsec_registry *registry,
-                                dedsec_view input,
-                                dedsec_finding_fn emit, void *user) {
+dedsec_status dedsec_detect_all_mode(const dedsec_registry *registry,
+                                     dedsec_view input,
+                                     dedsec_detection_mode mode,
+                                     dedsec_finding_fn emit, void *user) {
     size_t i;
     dedsec_status status;
-    if (!registry || (!input.ptr && input.len) || !emit) return DEDSEC_EINVAL;
+    if (!registry || (!input.ptr && input.len) || !emit ||
+        (mode != DEDSEC_DETECT_DEFAULT && mode != DEDSEC_DETECT_NATURAL_TEXT))
+        return DEDSEC_EINVAL;
     for (i = 0; i < registry->count; ++i) {
-        status = registry->modules[i]->detect(registry->modules[i]->context,
-                                              input, emit, user);
+        if (mode == DEDSEC_DETECT_DEFAULT &&
+            registry->modules[i] == dedsec_builtin_layout_module())
+            status = dedsec_builtin_layout_detect_default(input,
+                                                           emit, user);
+        else
+            status = registry->modules[i]->detect(registry->modules[i]->context,
+                                                  input, emit, user);
         if (status != DEDSEC_OK) return status;
     }
     return DEDSEC_OK;
+}
+
+dedsec_status dedsec_detect_all(const dedsec_registry *registry,
+                                dedsec_view input,
+                                dedsec_finding_fn emit, void *user) {
+    return dedsec_detect_all_mode(registry, input, DEDSEC_DETECT_DEFAULT,
+                                  emit, user);
 }
 
 dedsec_status dedsec_decode(const dedsec_registry *registry,

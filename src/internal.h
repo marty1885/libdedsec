@@ -20,6 +20,9 @@ dedsec_status dedsec_emit_observation(dedsec_finding_fn emit, void *user,
                                       size_t offset, size_t length,
                                       uint64_t evidence);
 int dedsec_is_hspace(uint8_t byte);
+dedsec_status dedsec_builtin_layout_detect_default(dedsec_view input,
+                                                    dedsec_finding_fn emit,
+                                                    void *user);
 int dedsec_unicode_is_default_ignorable(uint32_t cp);
 int dedsec_unicode_is_white_space(uint32_t cp);
 int dedsec_unicode_is_control(uint32_t cp);

@@ -56,6 +56,10 @@ dedsec_status dedsec_extract_features(dedsec_feature_kind kind,
                 size_t p = end;
                 while (p > start && dedsec_is_hspace(input.ptr[p - 1])) --p;
                 count = end - p;
+                /* A trailing-whitespace feature's provenance is the run
+                 * itself, not the complete line that contains it. */
+                start = p;
+                end = p + count;
             }
             s = emit_one(emit, user, (int64_t)count, start, end - start);
             if (s != DEDSEC_OK) return s;

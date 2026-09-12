@@ -149,6 +149,23 @@ static int capture_variant(void *u, const dedsec_finding *f) {
         strcmp(f->decoder_hint, capture->variant) == 0) ++capture->count;
     return 0;
 }
+typedef struct trailing_symbol_capture {
+    size_t symbols;
+    size_t first_offset;
+    size_t first_length;
+} trailing_symbol_capture;
+static int capture_trailing_symbols(void *u, const dedsec_finding *f) {
+    trailing_symbol_capture *capture = (trailing_symbol_capture *)u;
+    if (f->kind == DEDSEC_DETECTION_SYMBOL && f->decoder_hint &&
+        strcmp(f->decoder_hint, "trailing-hspace-width-low-bit") == 0) {
+        if (!capture->symbols) {
+            capture->first_offset = f->byte_offset;
+            capture->first_length = f->byte_length;
+        }
+        ++capture->symbols;
+    }
+    return 0;
+}
 typedef struct identity_capture { const char *variant; size_t count; } identity_capture;
 static int capture_identity(void *u, const dedsec_finding *f) {
     identity_capture *capture = (identity_capture *)u;
@@ -315,8 +332,17 @@ static void promoted_lane_expect(dedsec_registry *registry, const char *variant,
             }
         }
     }
-    CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
-                            capture_variant, &capture) == DEDSEC_OK);
+    if (carrier_kind < 3u) {
+        CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                                capture_variant, &capture) == DEDSEC_OK);
+        CHECK(capture.count == 0u);
+        CHECK(dedsec_detect_all_mode(registry, view(carrier.ptr, carrier.len),
+                                     DEDSEC_DETECT_NATURAL_TEXT,
+                                     capture_variant, &capture) == DEDSEC_OK);
+    } else {
+        CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                                capture_variant, &capture) == DEDSEC_OK);
+    }
     CHECK(capture.count == 1u);
     decode_bits_expect(registry, capture.module, variant, carrier.ptr,
                        carrier.len, NULL, 0, (sizeof(expected) - 1u) * 8u,
@@ -720,6 +746,14 @@ static void trailing_hspace_case_expect(dedsec_registry *registry) {
     CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
                             capture_variant, &capture) == DEDSEC_OK);
     CHECK(capture.count == 1);
+    {
+        trailing_symbol_capture symbols = {0};
+        CHECK(dedsec_detect_all(registry, view(carrier.ptr, carrier.len),
+                                capture_trailing_symbols, &symbols) == DEDSEC_OK);
+        CHECK(symbols.symbols == 32);
+        CHECK(symbols.first_offset == 1);
+        CHECK(symbols.first_length == 1);
+    }
     decode_bits_expect(registry, "layout", "trailing-hspace-width-low-bit",
                        carrier.ptr, carrier.len, NULL, 0, 32,
                        expected_low_bit, sizeof(expected_low_bit));
@@ -1106,6 +1140,9 @@ int main(void) {
 
     dedsec_registry_init(&registry);
     CHECK(dedsec_registry_add_builtins(&registry) == DEDSEC_OK);
+    CHECK(dedsec_detect_all_mode(&registry, view(normal, sizeof(normal) - 1),
+                                 (dedsec_detection_mode)99,
+                                 count_finding, &findings) == DEDSEC_EINVAL);
     promoted_lane_expect(&registry, "word-case-bits", 0u);
     promoted_lane_expect(&registry, "gap-width-bits", 1u);
     promoted_lane_expect(&registry, "comma-semicolon-bits", 2u);

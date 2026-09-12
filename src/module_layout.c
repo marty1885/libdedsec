@@ -120,11 +120,17 @@ static dedsec_status check_pair(dedsec_view input, dedsec_feature_kind kind,
     return s;
 }
 
+dedsec_status dedsec_builtin_layout_detect_default(dedsec_view input,
+                                                    dedsec_finding_fn emit,
+                                                    void *user) {
+    return check_trailing_widths(input, emit, user);
+}
+
 static dedsec_status layout_detect(void *context, dedsec_view input,
                                    dedsec_finding_fn emit, void *user) {
     dedsec_status s;
     (void)context;
-    s = check_trailing_widths(input, emit, user);
+    s = dedsec_builtin_layout_detect_default(input, emit, user);
     if (s != DEDSEC_OK) return s;
     /* Common choices remain raw symbols individually. Promote only when the
      * complete extracted lane survives the shared plaintext/data filter. */

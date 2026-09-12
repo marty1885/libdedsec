@@ -20,6 +20,9 @@ Every callback value has a `kind`:
 
 Built-in fixed identity, Unicode binary/nibble, line-ending, layout,
 ISO-2022/CESU-8, Markdown-marker, and validated radix lanes expose symbols.
+The low-noise default detection mode omits generic layout case, ordinary word
+gap, and punctuation symbols. Callers may expose those only after declaring a
+natural-looking input with `DEDSEC_DETECT_NATURAL_TEXT`.
 Rules whose mapping is caller-defined, such as `token-map-msb` and
 `codepoint-map-msb`, cannot assign a value during parameter-free detection;
 the caller must emit equivalent events from its reviewed map.

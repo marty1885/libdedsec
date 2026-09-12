@@ -180,6 +180,14 @@ typedef struct dedsec_finding {
 
 typedef int (*dedsec_finding_fn)(void *user, const dedsec_finding *finding);
 
+/* DEFAULT runs the conservative, low-noise detector set. NATURAL_TEXT adds
+ * generic style channels whose ordinary capitalization, spacing, and
+ * punctuation require a caller-supplied prose-like document assumption. */
+typedef enum dedsec_detection_mode {
+    DEDSEC_DETECT_DEFAULT = 0,
+    DEDSEC_DETECT_NATURAL_TEXT = 1
+} dedsec_detection_mode;
+
 typedef struct dedsec_decode_request {
     const char *variant;
     uint32_t flags;
@@ -255,6 +263,10 @@ const dedsec_module *dedsec_registry_find(const dedsec_registry *registry,
 dedsec_status dedsec_detect_all(const dedsec_registry *registry,
                                 dedsec_view input,
                                 dedsec_finding_fn emit, void *user);
+dedsec_status dedsec_detect_all_mode(const dedsec_registry *registry,
+                                     dedsec_view input,
+                                     dedsec_detection_mode mode,
+                                     dedsec_finding_fn emit, void *user);
 /* Glue caller-selected symbol observations in raw source order. Events must
  * have kind DEDSEC_DETECTION_SYMBOL and non-overlapping byte spans. The input
  * array is not modified. Callers retain the events as per-bit provenance. */
